@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+!README.md
+
+# Node
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Build output
+dist
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+
+# Misc
+*.log
+*.pdf

@@ -1,0 +1,29 @@
+# MAX Productivity Bot - Dependencies
+# Для Node.js проектов зависимости указаны в package.json
+# Этот файл создан для совместимости с требованиями
+
+# Основные зависимости (Node.js эквивалент requirements.txt - package.json):
+# @maxhub/max-bot-api: ^0.2.1
+# @prisma/client: ^6.19.0
+# axios: ^1.13.2
+# chrono-node: ^2.9.0
+# dayjs: ^1.11.19
+# dotenv: ^17.2.3
+# exceljs: ^4.4.0
+# ics: ^3.8.1
+# node-schedule: ^2.1.1
+# pino: ^10.1.0
+# zod: ^4.1.12
+
+# Dev зависимости:
+# @types/node: ^24.10.0
+# @types/node-schedule: ^2.1.8
+# prisma: ^6.19.0
+# rimraf: ^6.1.0
+# typescript: ^5.9.3
+
+# Для установки зависимостей используйте:
+# npm install
+
+# Полный список зависимостей с версиями см. в package.json
+

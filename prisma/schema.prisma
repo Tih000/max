@@ -1,0 +1,132 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Message {
+  id             String   @id
+  chatId         String
+  chatType       String
+  senderId       String?
+  senderName     String?
+  senderUsername String?
+  text           String?
+  attachments    Json?
+  timestamp      DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tasks     Task[]     @relation("MessageTasks")
+  materials Material[]
+
+  @@index([chatId, timestamp])
+  @@index([senderId, timestamp])
+}
+
+model Task {
+  id              String    @id @default(cuid())
+  chatId          String
+  title           String
+  description     String?
+  dueDate         DateTime?
+  assigneeId      String?
+  assigneeName    String?
+  sourceMessageId String
+  createdByUserId String?
+  createdByName   String?
+  status          String    @default("open") // open, completed, cancelled
+  priority        String    @default("medium") // low, medium, high
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  message   Message    @relation("MessageTasks", fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  reminders Reminder[]
+
+  @@unique([sourceMessageId, title])
+  @@index([chatId, dueDate])
+  @@index([chatId, status])
+  @@index([assigneeId, dueDate])
+  @@index([createdByUserId, dueDate])
+  @@index([status, dueDate])
+}
+
+model Reminder {
+  id        String   @id @default(cuid())
+  taskId    String
+  remindAt  DateTime
+  userId    String?
+  delivered Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+model UserPreference {
+  userId                String   @id
+  timezone              String   @default("Europe/Moscow")
+  reminderOffsetMinutes Int      @default(120)
+  quietHours            Json?
+  digestScheduleCron    String? // e.g. "0 9 * * 1" – каждая неделя
+  selectedChatId        String? // Выбранный чат для работы
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model UserChat {
+  id        String   @id @default(cuid())
+  userId    String
+  chatId    String
+  chatTitle String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, chatId])
+  @@index([userId])
+}
+
+model DigestLog {
+  id           String   @id @default(cuid())
+  chatId       String
+  generatedFor DateTime
+  from         DateTime
+  to           DateTime
+  summary      String
+  createdBy    String?
+  createdAt    DateTime @default(now())
+
+  @@index([chatId, createdAt])
+  @@index([chatId, generatedFor])
+}
+
+model Material {
+  id          String   @id @default(cuid())
+  chatId      String
+  title       String
+  link        String?
+  messageId   String
+  type        String? // image, file, video, share
+  description String? // Описание материала для анализа ИИ
+  fileType    String? // MIME-тип файла (например, "image/jpeg", "application/pdf")
+  fileName    String? // Имя файла
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+  @@index([chatId, type])
+  @@index([chatId, link])
+  @@index([link])
+}

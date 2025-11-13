@@ -1,0 +1,42 @@
+{
+  "name": "max-productivity-bot",
+  "version": "1.0.0",
+  "description": "AI ассистент для MAX: дайджесты чатов, дедлайны, напоминания и личный календарь.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "rimraf dist && tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "prepare": "npm run prisma:generate"
+  },
+  "keywords": [
+    "max",
+    "chatbot",
+    "productivity",
+    "gigachat"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@maxhub/max-bot-api": "^0.2.1",
+    "@prisma/client": "^6.19.0",
+    "axios": "^1.13.2",
+    "chrono-node": "^2.9.0",
+    "dayjs": "^1.11.19",
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "ics": "^3.8.1",
+    "node-schedule": "^2.1.1",
+    "pino": "^10.1.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/node-schedule": "^2.1.8",
+    "prisma": "^6.19.0",
+    "rimraf": "^6.1.0",
+    "typescript": "^5.9.3"
+  }
+}
