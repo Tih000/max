@@ -1,10 +1,13 @@
 import { prisma } from "../db";
 import { appConfig } from "../config";
-import { ensureIdString } from "../utils/ids";
+import { toInt } from "../utils/number";
 
 export class PreferenceService {
   async getOrCreate(userId: number | string) {
-    const normalizedUserId = ensureIdString(userId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) {
+      throw new Error("Не удалось определить ID пользователя");
+    }
     const existing = await prisma.userPreference.findUnique({ where: { userId: normalizedUserId } });
     if (existing) {
       return existing;

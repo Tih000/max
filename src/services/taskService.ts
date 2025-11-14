@@ -4,7 +4,7 @@ import { logger } from "../logger";
 import type { ParsedTask } from "../types";
 import { addMinutes } from "../utils/date";
 import { sanitizeText } from "../utils/text";
-import { ensureIdString, toIdString } from "../utils/ids";
+import { toInt, toBigInt } from "../utils/number";
 import { gigaChatService } from "./gigachatService";
 import { preferenceService } from "./preferenceService";
 import { reminderService } from "./reminderService";
@@ -20,8 +20,7 @@ export class TaskService {
 
     const parsedTasks: ParsedTask[] = [];
 
-    // Используем только LLM parser для точного определения дедлайнов
-    // Heuristic parser отключен, так как он создает много ложных срабатываний
+
     if (!gigaChatService.enabled) {
       logger.debug("GigaChat не включен, задачи не извлекаются", {
         messageText: text.substring(0, 200),
@@ -31,22 +30,21 @@ export class TaskService {
     }
     
     try {
-        // Получаем существующие задачи для предотвращения дубликатов
-        const chatId = ensureIdString(message.recipient.chat_id);
+        const chatId = toBigInt(message.recipient.chat_id);
+        if (!chatId) return [];
         const existingTasks = await prisma.task.findMany({
           where: { chatId },
           select: { title: true, dueDate: true },
           take: 20,
         });
 
-        // Формируем контекст из последних сообщений для лучшего понимания
         const recentMessages = await prisma.message.findMany({
           where: {
             chatId,
             text: { not: null },
           },
           orderBy: { timestamp: "desc" },
-          take: 10, // Увеличиваем контекст до 10 сообщений
+          take: 10,
           select: { text: true, senderName: true, timestamp: true },
         });
 
@@ -61,7 +59,6 @@ export class TaskService {
           existingTasks,
         );
         
-        // Логируем результат извлечения задач (только если LOG_LEVEL=debug или если задач не найдено)
         if (process.env.LOG_LEVEL === "debug" || llmTasks.length === 0) {
           logger.debug("Извлечение задач из сообщения", {
             messageText: text.substring(0, 200),
@@ -82,7 +79,6 @@ export class TaskService {
           messageText: text.substring(0, 200),
           location: "processIncomingMessage",
         });
-        // Если ИИ недоступен, не создаем задачи (лучше не создать, чем создать ложную)
       }
 
     const uniqueTasks = this.mergeTasks(parsedTasks);
@@ -98,8 +94,9 @@ export class TaskService {
     return createdTasks;
   }
 
-  async getUpcomingTasks(chatId: number | string, until: Date) {
-    const normalizedChatId = ensureIdString(chatId);
+  async getUpcomingTasks(chatId: number | string | bigint, until: Date) {
+    const normalizedChatId = toBigInt(chatId);
+    if (!normalizedChatId) return [];
     return prisma.task.findMany({
       where: {
         chatId: normalizedChatId,
@@ -119,7 +116,8 @@ export class TaskService {
   }
 
   async getPersonalTasks(userId: number | string, until: Date) {
-    const normalizedUserId = ensureIdString(userId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return [];
     return prisma.task.findMany({
       where: {
         OR: [
@@ -141,8 +139,9 @@ export class TaskService {
     });
   }
 
-  async getAllTasks(chatId: number | string, limit = 50) {
-    const normalizedChatId = ensureIdString(chatId);
+  async getAllTasks(chatId: number | string | bigint, limit = 50) {
+    const normalizedChatId = toBigInt(chatId);
+    if (!normalizedChatId) return [];
     return prisma.task.findMany({
       where: {
         chatId: normalizedChatId,
@@ -167,7 +166,6 @@ export class TaskService {
         return;
       }
 
-      // Безопасно преобразуем dueDate в строку для ключа
       const dueDateStr = task.dueDate instanceof Date 
         ? task.dueDate.toISOString() 
         : task.dueDate 
@@ -183,7 +181,8 @@ export class TaskService {
   }
 
   private async createOrUpdateTask(task: ParsedTask, message: MaxMessage) {
-    const chatId = ensureIdString(message.recipient.chat_id);
+    const chatId = toBigInt(message.recipient.chat_id);
+    if (!chatId) return null;
     const sourceMessageId = message.body.mid;
 
     const existing = await prisma.task.findFirst({
@@ -198,10 +197,10 @@ export class TaskService {
       title: task.title,
       description: task.description,
       dueDate: task.dueDate ?? null,
-      assigneeId: toIdString(task.assigneeId) ?? undefined,
+      assigneeId: toInt(task.assigneeId) ?? undefined,
       assigneeName: task.assigneeName ?? undefined,
       sourceMessageId,
-      createdByUserId: toIdString(message.sender?.user_id) ?? undefined,
+      createdByUserId: toInt(message.sender?.user_id) ?? undefined,
       createdByName: message.sender?.name ?? undefined,
     };
 
@@ -218,7 +217,7 @@ export class TaskService {
     }
 
     if (saved.dueDate) {
-      const userId = saved.assigneeId ?? toIdString(message.sender?.user_id);
+      const userId = saved.assigneeId ?? toInt(message.sender?.user_id);
       let offset = DEFAULT_REMINDER_OFFSET_MINUTES;
 
       if (userId) {

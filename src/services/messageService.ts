@@ -3,24 +3,32 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { logger } from "../logger";
 import { MaterialInfo } from "../types";
-import { ensureIdString, toIdString } from "../utils/ids";
+import { toInt, toBigInt } from "../utils/number";
 import { sanitizeText } from "../utils/text";
 import { gigaChatService } from "./gigachatService";
 
 export class MessageService {
   async upsertFromMaxMessage(message: MaxMessage) {
-    const attachments = message.body.attachments ?? Prisma.JsonNull;
+    const attachments = message.body.attachments ?? null;
 
-    const chatId = ensureIdString(message.recipient.chat_id);
-    const data: Prisma.MessageUpsertArgs["create"] = {
+    const chatId = toBigInt(message.recipient.chat_id);
+    if (!chatId) {
+      logger.warn("Не удалось преобразовать chatId в BigInt", {
+        chatId: message.recipient.chat_id,
+        location: "upsertFromMaxMessage",
+      });
+      return;
+    }
+
+    const data = {
       id: message.body.mid,
       chatId,
       chatType: message.recipient.chat_type ?? "unknown",
-      senderId: toIdString(message.sender?.user_id) ?? undefined,
+      senderId: toInt(message.sender?.user_id) ?? undefined,
       senderName: message.sender?.name ?? undefined,
       senderUsername: message.sender?.username ?? undefined,
       text: sanitizeText(message.body.text),
-      attachments: attachments as Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput,
+      attachments: attachments as Prisma.InputJsonValue,
       timestamp: new Date(message.timestamp),
     };
 
@@ -36,11 +44,9 @@ export class MessageService {
         where: { messageId: message.body.mid },
       });
 
-      // Получаем контекст сообщения для анализа материалов
       const messageText = sanitizeText(message.body.text) || "";
       const context = messageText.length > 0 ? messageText.substring(0, 500) : undefined;
 
-      // Сначала сохраняем материалы без описания (быстро)
       const materialsToSave = materials.map((material) => ({
         chatId,
         messageId: material.messageId,
@@ -57,16 +63,13 @@ export class MessageService {
         skipDuplicates: true,
       });
 
-      // Затем анализируем материалы через ИИ асинхронно (в фоне, не блокируем)
-      // Обновляем описание после анализа
+
       if (gigaChatService.enabled && materials.length > 0) {
-        // Запускаем анализ в фоне без блокировки
         Promise.all(
           materials.map(async (material) => {
             try {
               const description = await gigaChatService.analyzeMaterial(material, context);
               if (description) {
-                // Обновляем материал с описанием
                 await prisma.material.updateMany({
                   where: {
                     messageId: material.messageId,
@@ -119,7 +122,6 @@ export class MessageService {
       }
 
       if (attachmentType === "image") {
-        // Для фотографий используем "фотка", если нет названия
         const imageTitle = payload?.name || "фотка";
         materials.push({
           title: imageTitle,
@@ -132,7 +134,6 @@ export class MessageService {
       }
 
       if (attachmentType === "file") {
-        // Для файлов используем название файла, если есть, иначе "файл"
         const fileName = payload?.name || "файл";
         materials.push({
           title: fileName,
@@ -145,7 +146,6 @@ export class MessageService {
       }
 
       if (attachmentType === "video") {
-        // Для видео используем название, если есть, иначе "видео"
         const videoTitle = payload?.name || "видео";
         materials.push({
           title: videoTitle,

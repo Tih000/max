@@ -2,7 +2,7 @@ import schedule, { Job } from "node-schedule";
 import type { Reminder, Task } from "@prisma/client";
 import { prisma } from "../db";
 import { logger } from "../logger";
-import { toIdString } from "../utils/ids";
+import { toInt } from "../utils/number";
 
 export type ReminderHandler = (task: Task, reminder: Reminder) => Promise<void>;
 
@@ -22,7 +22,7 @@ export class ReminderService {
     const reminder = await prisma.reminder.create({
       data: {
         taskId: task.id,
-        userId: toIdString(userId) ?? undefined,
+        userId: toInt(userId) ?? undefined,
         remindAt,
       },
     });

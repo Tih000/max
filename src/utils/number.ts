@@ -21,3 +21,33 @@ export function toInt(value: unknown): number | undefined {
   return undefined;
 }
 
+export function toBigInt(value: unknown): bigint | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "bigint") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) {
+      return BigInt(Math.trunc(value));
+    }
+    return undefined;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    try {
+      // Проверяем, что строка представляет целое число
+      if (/^-?\d+$/.test(value.trim())) {
+        return BigInt(value.trim());
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+

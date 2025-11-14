@@ -7,8 +7,7 @@ import type { DigestOptions } from "../types";
 import { formatDate, formatRange } from "../utils/date";
 import { formatMaterials, sanitizeText } from "../utils/text";
 import { gigaChatService } from "./gigachatService";
-import { ensureIdString } from "../utils/ids";
-import { toInt } from "../utils/number";
+import { toInt, toBigInt } from "../utils/number";
 
 export class DigestService {
   private botApi?: Api;
@@ -18,13 +17,16 @@ export class DigestService {
   }
 
   async generateDigest(
-    chatId: number | string,
+    chatId: number | string | bigint,
     chatTitle: string,
     range: { from: Date; to: Date },
     options: DigestOptions = {},
     botApi?: Api,
   ) {
-    const normalizedChatId = ensureIdString(chatId);
+    const normalizedChatId = toBigInt(chatId);
+    if (!normalizedChatId) {
+      return "Не удалось определить ID чата.";
+    }
     const messages: Message[] = await prisma.message.findMany({
       where: {
         chatId: normalizedChatId,
@@ -70,7 +72,7 @@ export class DigestService {
     const memberActivity = new Map<string, { name: string; username?: string; messageCount: number; tasks?: number }>();
     
     messages.forEach((message) => {
-      const senderId = message.senderId ?? "unknown";
+      const senderId = message.senderId ? String(message.senderId) : "unknown";
       const existing = memberActivity.get(senderId);
       memberActivity.set(senderId, {
         name: message.senderName ?? existing?.name ?? "Участник",
@@ -82,7 +84,7 @@ export class DigestService {
     // Объединяем информацию об участниках
     const membersInfo = chatMembers.length > 0
       ? chatMembers.map((member) => {
-          const userId = ensureIdString(member.user_id);
+          const userId = member.user_id ? String(member.user_id) : "unknown";
           const activity = memberActivity.get(userId);
           return {
             id: userId,
@@ -164,7 +166,7 @@ export class DigestService {
           hasMaterialsSection: summary.includes("📎 **МАТЕРИАЛЫ**"),
         });
         
-        await this.saveDigest(normalizedChatId, range, summary, options.audienceUserId ?? null);
+        await this.saveDigest(normalizedChatId, range, summary, toInt(options.audienceUserId) ?? null);
         logger.debug(`Суммирование GigaChat успешно, длина: ${summary.length}`, { summaryLength: summary.length });
         return summary;
       } catch (error) {
@@ -176,16 +178,16 @@ export class DigestService {
     }
 
     const fallback = this.buildFallbackDigest(prepared, range);
-    await this.saveDigest(normalizedChatId, range, fallback, options.audienceUserId ?? null);
+    await this.saveDigest(normalizedChatId, range, fallback, toInt(options.audienceUserId) ?? null);
     logger.debug(`Fallback дайджест сгенерирован, длина: ${fallback.length}`, { fallbackLength: fallback.length });
     return fallback;
   }
 
   async saveDigest(
-    chatId: string,
+    chatId: bigint,
     range: { from: Date; to: Date },
     summary: string,
-    createdBy: number | string | null,
+    createdBy: number | null,
   ) {
     await prisma.digestLog.create({
       data: {
@@ -193,15 +195,15 @@ export class DigestService {
         from: range.from,
         to: range.to,
         summary,
-        createdBy: ensureIdString(createdBy) ?? undefined,
+        createdBy: createdBy ?? undefined,
         generatedFor: new Date(),
       },
     });
   }
 
-  async getLastDigests(chatId: number | string, limit = 5) {
+  async getLastDigests(chatId: number | string | bigint, limit = 5) {
     return prisma.digestLog.findMany({
-      where: { chatId: ensureIdString(chatId) },
+      where: { chatId: toBigInt(chatId) ?? undefined },
       orderBy: { createdAt: "desc" },
       take: limit,
     });

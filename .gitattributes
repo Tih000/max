@@ -1,0 +1,22 @@
+# Автоматическая обработка окончаний строк
+* text=auto
+
+# Исходный код - всегда LF
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Бинарные файлы
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Игнорировать dist (на всякий случай)
+dist/** -text
+

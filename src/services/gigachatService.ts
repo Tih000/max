@@ -48,7 +48,7 @@ export class GigaChatService {
 
   private createHttpsAgent(): HttpsAgent {
     const certPathStr = appConfig.GIGACHAT_CA_CERT_PATH ?? "";
-    const certPaths = certPathStr.split(";").map((p) => p.trim()).filter(Boolean);
+    const certPaths = certPathStr.split(";").map((p: string) => p.trim()).filter(Boolean);
     
     if (certPaths.length === 0) {
       logger.warn("Сертификаты CA для GigaChat не указаны, используется системный сертификат", {
@@ -92,39 +92,30 @@ export class GigaChatService {
       return this.tokenCache.token;
     }
 
-    // Объявляем переменные вне блока try, чтобы они были доступны в catch
     let credentialsInfo: string = "";
     let requestUrl: string = "";
     
     try {
-      // Формируем Basic authorization header
       let authHeader: string;
       
       if (appConfig.GIGACHAT_AUTHORIZATION_KEY) {
-        // GIGACHAT_AUTHORIZATION_KEY может содержать base64-закодированную строку или уже готовый "Basic <base64>"
         const authKey = appConfig.GIGACHAT_AUTHORIZATION_KEY.trim();
         
-        // Проверяем, является ли строка валидным base64
         let base64Key = authKey;
         if (authKey.startsWith("Basic ")) {
-          // Если уже есть префикс "Basic ", убираем его
           base64Key = authKey.substring(6).trim();
         }
         
-        // Пытаемся декодировать для проверки формата
         try {
           const decoded = Buffer.from(base64Key, "base64").toString("utf-8");
           credentialsInfo = `Decoded: ${decoded.substring(0, 20)}... (client_id:client_secret format)`;
           
-          // Используем как есть, добавляя префикс "Basic "
           authHeader = `Basic ${base64Key}`;
         } catch (decodeError) {
-          // Если не удалось декодировать, возможно это уже полный заголовок
           logger.warn("Не удалось декодировать GIGACHAT_AUTHORIZATION_KEY как base64", {
             error: decodeError,
             location: "getAccessToken",
           });
-          // Пробуем использовать как есть
           if (authKey.startsWith("Basic ")) {
             authHeader = authKey;
           } else {
@@ -133,7 +124,6 @@ export class GigaChatService {
           credentialsInfo = "Using as-is (cannot decode)";
         }
       } else if (appConfig.GIGACHAT_CLIENT_ID && appConfig.GIGACHAT_CLIENT_SECRET) {
-        // Кодируем client_id:client_secret в base64
         const credentials = `${appConfig.GIGACHAT_CLIENT_ID}:${appConfig.GIGACHAT_CLIENT_SECRET}`;
         authHeader = `Basic ${Buffer.from(credentials).toString("base64")}`;
         credentialsInfo = `Generated from CLIENT_ID:CLIENT_SECRET`;
@@ -148,15 +138,11 @@ export class GigaChatService {
         "RqUID": randomUUID(),
       };
 
-      // В теле запроса только scope, без client_id и client_secret
-      // Используем URLSearchParams для правильного URL-кодирования
+
       const bodyParams = new URLSearchParams();
       bodyParams.set("scope", appConfig.GIGACHAT_SCOPE);
       const bodyString = bodyParams.toString();
 
-      // По документации GigaChat, если baseURL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-      // то запрос должен идти на пустой путь "" или "/", а НЕ на "/token"
-      // Документация: POST https://ngw.devices.sberbank.ru:9443/api/v2/oauth
       requestUrl = "";
 
       logger.debug("GigaChat token request", {
@@ -188,34 +174,25 @@ export class GigaChatService {
         throw new Error("GigaChat API не вернул токен доступа");
       }
 
-      // Обрабатываем expires_at (Unix timestamp в секундах) или expires_in (количество секунд)
       const expiresAt = response.data?.expires_at;
       const expiresIn = response.data?.expires_in;
       
       let tokenExpiresAt: number;
       if (expiresAt !== undefined && expiresAt !== null) {
-        // expires_at - это Unix timestamp в секундах или ISO строка
         if (typeof expiresAt === "number") {
-          // Если число больше текущего времени в миллисекундах, значит это уже миллисекунды
-          // Иначе это секунды
           tokenExpiresAt = expiresAt > Date.now() ? expiresAt : expiresAt * 1000;
         } else if (typeof expiresAt === "string") {
-          // ISO строка
           tokenExpiresAt = new Date(expiresAt).getTime();
         } else {
-          // По умолчанию 30 минут
           tokenExpiresAt = Date.now() + 30 * 60 * 1000;
         }
       } else if (expiresIn !== undefined && expiresIn !== null) {
-        // expires_in - это количество секунд до истечения
         const expiresInSeconds = typeof expiresIn === "number" ? expiresIn : parseInt(String(expiresIn), 10);
         tokenExpiresAt = Date.now() + expiresInSeconds * 1000;
       } else {
-        // По умолчанию 30 минут
         tokenExpiresAt = Date.now() + 30 * 60 * 1000;
       }
 
-      // Вычитаем 1 минуту для безопасности
       this.tokenCache = {
         token,
         expiresAt: tokenExpiresAt - 60000,
@@ -229,10 +206,11 @@ export class GigaChatService {
       return token;
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        const statusText = error.response?.statusText;
-        const responseHeaders = error.response?.headers;
-        const errorData = error.response?.data;
+        const response = error.response;
+        const status = response?.status;
+        const statusText = response?.statusText;
+        const responseHeaders = response?.headers;
+        const errorData = response?.data;
         
         let errorMessage: string;
         if (typeof errorData === "string") {
@@ -240,7 +218,7 @@ export class GigaChatService {
         } else if (errorData && typeof errorData === "object") {
           errorMessage = JSON.stringify(errorData);
         } else {
-          errorMessage = error.message;
+          errorMessage = error.message ?? "Unknown error";
         }
         
         logger.error("Ошибка получения токена GigaChat", {
@@ -258,7 +236,6 @@ export class GigaChatService {
           location: "getAccessToken",
         });
         
-        // Если это 400 Bad Request, возможно проблема в credentials или формате запроса
         if (status === 400) {
           logger.error("Возможные причины ошибки 400:", {
             reasons: [
@@ -313,12 +290,12 @@ export class GigaChatService {
           result: response.data.choices[0]?.message?.content ?? "",
           payload: response.data,
         };
-      } catch (error) {
+      } catch (error: unknown) {
         lastError = error;
         if (attempt < maxRetries) {
           const delay = attempt * 1000;
           logger.warn(`Ошибка запроса к GigaChat, попытка ${attempt}/${maxRetries}`, {
-            error,
+            error: error instanceof Error ? error.message : String(error),
             location: "complete",
             attempt,
           });
@@ -328,7 +305,7 @@ export class GigaChatService {
     }
 
     logger.error("Не удалось выполнить запрос к GigaChat после всех попыток", {
-      error: lastError,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
       location: "complete",
     });
     throw lastError;
@@ -340,7 +317,7 @@ export class GigaChatService {
     range: { from: Date; to: Date },
     options: DigestOptions = {},
     chatMembers: Array<{ id: string; name: string; username?: string; messageCount?: number }> = [],
-    _materials: Array<{ title: string; link?: string | null; description?: string | null }> = [], // Не используется - материалы добавляются после генерации дайджеста
+    _materials: Array<{ title: string; link?: string | null; description?: string | null }> = [], 
   ): Promise<string> {
     if (!this.enabled) {
       throw new Error("GigaChat integration is not configured");
@@ -431,7 +408,6 @@ export class GigaChatService {
       .filter(Boolean)
       .join("\n");
 
-    // НЕ передаем материалы в промпт GigaChat - они будут добавлены после генерации дайджеста
     const materialsInfo = "";
 
     const userMessage: ChatMessage = {
@@ -536,9 +512,8 @@ export class GigaChatService {
         ].join("\n")
       : "";
 
-    // Добавляем текущую дату для контекста
     const currentDate = new Date();
-    const currentDateStr = currentDate.toISOString().split("T")[0]; // YYYY-MM-DD
+    const currentDateStr = currentDate.toISOString().split("T")[0]; 
     const currentDateFormatted = `${currentDateStr} (сегодня)`;
     
     const userMessage = [
@@ -562,7 +537,6 @@ export class GigaChatService {
 
     const completion = await this.complete(messages, 0.2);
 
-    // Логируем исходный ответ для отладки (только если LOG_LEVEL=debug)
     if (process.env.LOG_LEVEL === "debug") {
       logger.debug("GigaChat extractTasks response", {
         messageText: messageText.substring(0, 200),
@@ -572,15 +546,12 @@ export class GigaChatService {
     }
 
     try {
-      // Пытаемся извлечь JSON из ответа (может быть обернут в markdown)
       let result = completion.result.trim();
       
-      // Убираем markdown код блоки, если есть
       const jsonMatch = result.match(/```(?:json)?\s*(\[.*?\])\s*```/s);
       if (jsonMatch && jsonMatch[1]) {
         result = jsonMatch[1];
       } else {
-        // Пытаемся найти JSON массив напрямую
         const arrayMatch = result.match(/\[.*\]/s);
         if (arrayMatch && arrayMatch[0]) {
           result = arrayMatch[0];
@@ -594,25 +565,21 @@ export class GigaChatService {
         assigneeName?: string;
       }>;
       const tasks: ParsedTask[] = (Array.isArray(parsed) ? parsed : []).map((task) => {
-        // Преобразуем строку даты в Date объект
         let dueDate: Date | undefined;
         if (task.dueDate) {
           if (task.dueDate instanceof Date) {
             dueDate = task.dueDate;
           } else if (typeof task.dueDate === "string") {
-            // Парсим относительные даты (завтра, через неделю) и ISO8601
             try {
               const now = new Date();
               
-              // Сначала пробуем стандартный парсер chrono
               let parsedDate = chrono.parseDate(task.dueDate, now);
               
-              // Если не получилось, пробуем парсить русские и английские относительные даты
               if (!parsedDate) {
                 const lowerDate = task.dueDate.toLowerCase().trim();
                 const tomorrow = new Date(now);
                 tomorrow.setDate(tomorrow.getDate() + 1);
-                tomorrow.setHours(23, 59, 59, 999); // Конец дня
+                tomorrow.setHours(23, 59, 59, 999); 
                 
                 if (lowerDate === "завтра" || lowerDate === "tomorrow") {
                   parsedDate = tomorrow;
@@ -622,8 +589,6 @@ export class GigaChatService {
                   dayAfter.setHours(23, 59, 59, 999);
                   parsedDate = dayAfter;
                 } else if (lowerDate === "today" || lowerDate === "сегодня") {
-                  // "today" обычно означает сегодня, но если в сообщении было "завтра", это ошибка GigaChat
-                  // В этом случае логируем предупреждение, но все равно устанавливаем на сегодня
                   logger.warn("GigaChat вернул 'today' вместо относительной даты", {
                     originalMessage: messageText.substring(0, 200),
                     dueDate: task.dueDate,
@@ -638,7 +603,6 @@ export class GigaChatService {
                   weekLater.setHours(23, 59, 59, 999);
                   parsedDate = weekLater;
                 } else if (lowerDate.includes("через") && lowerDate.includes("день")) {
-                  // Парсим "через N дней"
                   const daysMatch = lowerDate.match(/через\s+(\d+)\s+дн/i);
                   if (daysMatch && daysMatch[1]) {
                     const days = parseInt(daysMatch[1], 10);
@@ -650,7 +614,6 @@ export class GigaChatService {
                     }
                   }
                 } else if (lowerDate.includes("через") && lowerDate.includes("недел")) {
-                  // Парсим "через N недель"
                   const weeksMatch = lowerDate.match(/через\s+(\d+)\s+недел/i);
                   if (weeksMatch && weeksMatch[1]) {
                     const weeks = parseInt(weeksMatch[1], 10);
@@ -662,7 +625,6 @@ export class GigaChatService {
                     }
                   }
                 } else if (lowerDate.match(/in\s+(\d+)\s+days?/i)) {
-                  // Парсим "in N days"
                   const daysMatch = lowerDate.match(/in\s+(\d+)\s+days?/i);
                   if (daysMatch && daysMatch[1]) {
                     const days = parseInt(daysMatch[1], 10);
@@ -679,7 +641,6 @@ export class GigaChatService {
               if (parsedDate) {
                 dueDate = parsedDate;
               } else {
-                // Пробуем ISO8601 формат
                 const isoDate = new Date(task.dueDate);
                 if (!isNaN(isoDate.getTime())) {
                   dueDate = isoDate;
@@ -708,7 +669,6 @@ export class GigaChatService {
         };
       });
       
-      // Логируем результат извлечения (только если LOG_LEVEL=debug или если задач не найдено)
       if (process.env.LOG_LEVEL === "debug" || tasks.length === 0) {
         logger.debug("GigaChat extractTasks parsed", {
           messageText: messageText.substring(0, 200),
@@ -734,12 +694,7 @@ export class GigaChatService {
     }
   }
 
-  /**
-   * Анализирует материал и создает краткую сводку через ИИ
-   * @param material - Информация о материале
-   * @param context - Контекст сообщения или чата
-   * @returns Краткая сводка материала или null, если анализ невозможен
-   */
+
   async analyzeMaterial(
     material: {
       title: string;
@@ -754,15 +709,10 @@ export class GigaChatService {
       return null;
     }
 
-    // Анализируем только материалы, которые можно проанализировать
-    // Изображения, видео и файлы без текста анализировать сложно, поэтому пропускаем
-    // Фокусируемся на ссылках (share) и файлах с текстовым содержанием
     if (material.type && material.type !== "share" && material.type !== "file") {
-      // Для изображений и видео можем использовать только название файла
       return null;
     }
 
-    // Проверяем, можно ли анализировать файл по типу
     if (material.type === "file" && material.fileType) {
       const textFileTypes = [
         "text/",
@@ -775,7 +725,6 @@ export class GigaChatService {
       
       const isTextFile = textFileTypes.some((type) => material.fileType?.startsWith(type));
       if (!isTextFile) {
-        // Для бинарных файлов анализ невозможен
         return null;
       }
     }
@@ -818,7 +767,6 @@ export class GigaChatService {
       const completion = await this.complete(messages, 0.3);
       const summary = completion.result.trim();
 
-      // Ограничиваем длину сводки
       if (summary.length > 200) {
         return summary.substring(0, 197) + "...";
       }

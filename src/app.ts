@@ -2,7 +2,7 @@ import type { Context } from "@maxhub/max-bot-api";
 import { Bot, FileAttachment, ImageAttachment } from "@maxhub/max-bot-api";
 import type { Message } from "@maxhub/max-bot-api/dist/core/network/api";
 import type { AttachmentRequest } from "@maxhub/max-bot-api/dist/core/network/api/types/attachment-request";
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appConfig } from "./config";
@@ -21,8 +21,7 @@ import { searchService } from "./services/searchService";
 import { taskService } from "./services/taskService";
 import { userChatService } from "./services/userChatService";
 import { addDays, endOfDay, endOfWeek, formatDate, startOfDay, startOfWeek } from "./utils/date";
-import { ensureIdString } from "./utils/ids";
-import { toInt } from "./utils/number";
+import { toInt, toBigInt } from "./utils/number";
 import { formatBulletList, formatMaterials, sanitizeText } from "./utils/text";
 
 type CommandContext = Context & { message: Message };
@@ -35,25 +34,43 @@ export class App {
     await connectDatabase();
     await reminderService.init(this.handleReminder);
     await scheduledDigestService.init(this.bot.api);
-    assistantService.setBotApi(this.bot.api); // Передаем API для получения участников чата
-    digestService.setBotApi(this.bot.api); // Передаем API для дайджестов
+    assistantService.setBotApi(this.bot.api); 
+    digestService.setBotApi(this.bot.api); 
     
-    // Предзагружаем изображение приветствия для быстрого доступа
     await this.preloadWelcomeImage();
     
     this.registerHandlers();
   }
 
-  /**
-   * Предзагрузка изображения приветствия для оптимизации команды /start
-   */
+
   private async preloadWelcomeImage() {
     try {
-      const imagePath = join(process.cwd(), "src", "start_photo.png");
+      const possiblePaths = [
+        join(process.cwd(), "src", "start_photo.png"), 
+        join(process.cwd(), "assets", "start_photo.png"), 
+        join(__dirname, "..", "assets", "start_photo.png"),
+        join(process.cwd(), "start_photo.png"),
+      ];
+
+      let imagePath: string | null = null;
+      for (const path of possiblePaths) {
+        if (existsSync(path)) {
+          imagePath = path;
+          break;
+        }
+      }
+
+      if (!imagePath) {
+        logger.debug("Изображение приветствия не найдено, работаем без него", {
+          location: "preloadWelcomeImage",
+          searchedPaths: possiblePaths,
+        });
+        return;
+      }
+
       const image = await this.bot.api.uploadImage({
         source: readFileSync(imagePath),
       });
-      // Сохраняем токен изображения для быстрого использования
       const imageJson = image.toJson();
       if (imageJson.type === "image" && "payload" in imageJson && imageJson.payload) {
         const payload = imageJson.payload as { photos?: Record<string, { token: string }> };
@@ -61,7 +78,10 @@ export class App {
           const firstPhoto = Object.values(payload.photos)[0];
           if (firstPhoto?.token) {
             this.welcomeImageToken = firstPhoto.token;
-            logger.system("Изображение приветствия предзагружено");
+            logger.system("Изображение приветствия предзагружено", {
+              location: "preloadWelcomeImage",
+              path: imagePath,
+            });
           }
         }
       }
@@ -70,7 +90,6 @@ export class App {
         location: "preloadWelcomeImage",
         error,
       });
-      // Продолжаем без изображения
     }
   }
 
@@ -78,14 +97,13 @@ export class App {
     try {
       logger.system("Запуск бота...");
       
-      // Retry logic for getMyInfo() - handles network errors
       let botInfoRetries = 0;
       const maxBotInfoRetries = 3;
       while (botInfoRetries < maxBotInfoRetries) {
         try {
           this.bot.botInfo ??= await this.bot.api.getMyInfo();
           logger.system(`Бот запущен: @${this.bot.botInfo?.username ?? "unknown"}`);
-          break; // Success
+          break; 
         } catch (error) {
           botInfoRetries++;
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -102,7 +120,6 @@ export class App {
             }
           }
           
-          // For other errors or max retries, throw
           logger.error("Не удалось получить информацию о боте", {
             location: "start.getBotInfo",
             error,
@@ -111,7 +128,6 @@ export class App {
         }
       }
       
-      // Start polling - it has built-in retry logic for FetchError in getUpdates()
       this.bot.start().catch((error) => {
         logger.error("Ошибка в цикле polling", {
           location: "start.polling",
@@ -119,7 +135,6 @@ export class App {
         });
       });
       logger.system("Бот запущен и готов к работе");
-      // Give polling a moment to start
       await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch (error) {
       logger.error("Не удалось запустить бота", {
@@ -147,7 +162,6 @@ export class App {
       });
     });
 
-    // Middleware для обработки обновлений
     this.bot.use(async (ctx, next) => {
       try {
         await next();
@@ -178,7 +192,6 @@ export class App {
 
       const userId = toInt(ctx.user?.user_id);
       
-      // Логируем событие bot_started для отладки (всегда, даже если userId нет)
       const update = ctx.update as { payload?: string | null } | undefined;
       const startPayload = ctx.startPayload ?? update?.payload;
       const hasStartPayload = startPayload && startPayload !== null;
@@ -202,10 +215,8 @@ export class App {
 
       await preferenceService.getOrCreate(userId);
       
-      // Получаем имя пользователя
       const userName = ctx.user?.name ?? "друг";
       
-      // Получаем информацию об активном чате
       const activeChat = await this.getActiveChatInfo(userId);
       
       const welcomeText = [
@@ -225,10 +236,8 @@ export class App {
         "• «есть задачи на завтра?»",
       ].join("\n");
       
-      // Подготавливаем вложения: изображение (из кэша) + клавиатура
       const attachments: AttachmentRequest[] = [];
       
-      // Используем предзагруженное изображение из кэша
       if (this.welcomeImageToken) {
         try {
           const image = new ImageAttachment({ token: this.welcomeImageToken });
@@ -242,7 +251,6 @@ export class App {
         }
       }
       
-      // Добавляем клавиатуру (всегда добавляем, даже если есть изображение)
       const keyboard = keyboardService.getMainMenu(activeChat?.title ?? null);
       attachments.push(keyboard);
       
@@ -269,7 +277,6 @@ export class App {
         throw error;
       }
       
-      // Логируем, если это было нажатие на кнопку "Начать"
       if (hasStartPayload) {
         logger.userAction(userId, "Кнопка 'Начать' нажата через bot_started", { 
           userName: ctx.user?.name ?? "друг",
@@ -289,7 +296,6 @@ export class App {
       logger.command(userId ?? undefined, "help", ctx.chatId);
       await this.handleHelpCommand(ctx as CommandContext);
     });
-    // Используем регулярные выражения для команд с аргументами
     this.bot.command(/^digest(\s|$)/, async (ctx) => this.handleDigestCommand(ctx as CommandContext));
     this.bot.command("deadlines", async (ctx) => this.handleDeadlinesCommand(ctx as CommandContext));
     this.bot.command("calendar", async (ctx) => this.handleCalendarCommand(ctx as CommandContext));
@@ -300,10 +306,8 @@ export class App {
     this.bot.command("select_chat", async (ctx) => this.handleSelectChatCommand(ctx as CommandContext));
     this.bot.command("sync_chats", async (ctx) => this.handleSyncChatsCommand(ctx as CommandContext));
 
-    // Обработчики callback кнопок
     this.registerButtonHandlers();
 
-    // Обработчик текста "Начать" (на случай, если кнопка отправляет текст)
     this.bot.hears(/^(Начать|начать|START|start)$/i, async (ctx) => {
       const userId = ctx.user ? toInt((ctx.user as { user_id?: number }).user_id) : null;
       if (!userId) return;
@@ -314,7 +318,6 @@ export class App {
         location: "hears.Начать",
       });
       
-      // Вызываем тот же обработчик, что и для команды /start
       await this.handleStartCommand(ctx as CommandContext);
     });
 
@@ -324,9 +327,7 @@ export class App {
     });
   }
 
-  /**
-   * Обработчик команды /start (вынесен в отдельный метод для переиспользования)
-   */
+
   private async handleStartCommand(ctx: CommandContext) {
     const userId = ctx.user ? toInt((ctx.user as { user_id?: number }).user_id) : null;
     
@@ -337,12 +338,10 @@ export class App {
 
     await preferenceService.getOrCreate(userId);
 
-    // Получаем имя пользователя
     const userName = ctx.user && typeof ctx.user === 'object' && 'name' in ctx.user 
       ? (ctx.user as { name?: string }).name ?? "друг"
       : "друг";
     
-    // Выполняем операции параллельно для ускорения
     const [activeChat] = await Promise.all([
       this.getActiveChatInfo(userId),
     ]);
@@ -364,10 +363,8 @@ export class App {
       "• «есть задачи на завтра?»",
     ].join("\n");
     
-    // Подготавливаем вложения: изображение (из кэша) + клавиатура
     const attachments: AttachmentRequest[] = [];
     
-    // Используем предзагруженное изображение из кэша
     if (this.welcomeImageToken) {
       try {
         const image = new ImageAttachment({ token: this.welcomeImageToken });
@@ -381,22 +378,18 @@ export class App {
       }
     }
     
-    // Добавляем клавиатуру
     attachments.push(keyboardService.getMainMenu(activeChat?.title ?? null));
     
     await ctx.reply(welcomeText, { attachments });
     logger.userAction(userId, "Команда /start выполнена", { userName });
   }
 
-  /**
-   * Проверяет, упомянут ли бот в сообщении
-   */
+
   private isBotMentioned(message: Message, botUserId?: number): boolean {
     if (!botUserId) {
       return false;
     }
 
-    // Проверяем упоминания в markup
     const markup = message.body.markup ?? [];
     const mention = markup.find((m) => {
       if (m.type === "user_mention") {
@@ -410,7 +403,6 @@ export class App {
       return true;
     }
 
-    // Проверяем упоминание по username в тексте
     const text = message.body.text ?? "";
     const botInfo = this.bot.botInfo as { username?: string } | undefined;
     const botUsername = botInfo?.username;
@@ -424,28 +416,26 @@ export class App {
   private async handleIncomingMessage(ctx: Context & { message: Message }) {
     const { message } = ctx;
     
-    // Сохраняем все сообщения в БД (тихо, без ответов)
     try {
       await messageService.upsertFromMaxMessage(message);
     } catch (error) {
         logger.error("Не удалось сохранить сообщение", {
           location: "handleIncomingMessage.saveMessage",
           userId: toInt(message.sender?.user_id),
-          chatId: toInt(message.recipient.chat_id),
+          chatId: toBigInt(message.recipient.chat_id),
           error,
         });
     }
 
-    // Auto-add chat to user's list if message is from group chat
     const chatType = message.recipient.chat_type;
     const isPersonal = chatType === "dialog";
     if (!isPersonal) {
       const userId = toInt(message.sender?.user_id);
-      const chatId = toInt(message.recipient.chat_id);
+      const chatId = toBigInt(message.recipient.chat_id);
       if (userId && chatId) {
         try {
           const chatTitle = ctx.chat?.title ?? undefined;
-          await userChatService.addChat(userId, chatId, chatTitle);
+          await userChatService.addChat(userId, Number(chatId), chatTitle);
         } catch (error) {
           logger.warn("Не удалось автоматически добавить чат", {
             location: "handleIncomingMessage.addChat",
@@ -464,12 +454,10 @@ export class App {
 
     const isCommand = text.startsWith("/");
 
-    // Команды обрабатываются отдельно
     if (isCommand) {
       return;
     }
 
-    // В личных сообщениях всегда отвечаем
     if (isPersonal) {
       const userId = toInt(message.sender?.user_id);
       if (!userId) {
@@ -480,21 +468,17 @@ export class App {
         return;
       }
 
-      // Проверяем, первый ли это раз взаимодействия с ботом
-      const userIdString = ensureIdString(userId);
+      const userIdNumber = toInt(userId);
+      if (!userIdNumber) return;
       const existingPreference = await prisma.userPreference.findUnique({
-        where: { userId: userIdString },
+        where: { userId: userIdNumber },
       });
       
-      // Если это первый раз - показываем приветствие с кнопками
       if (!existingPreference) {
-        // Создаем preferences для пользователя
         await preferenceService.getOrCreate(userId);
         
-        // Получаем имя пользователя
         const userName = message.sender?.name ?? "друг";
         
-        // Получаем информацию об активном чате
         const activeChat = await this.getActiveChatInfo(userId);
         
         const welcomeText = [
@@ -514,10 +498,8 @@ export class App {
           "• «есть задачи на завтра?»",
         ].join("\n");
         
-        // Подготавливаем вложения: изображение (из кэша) + клавиатура
         const attachments: AttachmentRequest[] = [];
         
-        // Используем предзагруженное изображение из кэша
         if (this.welcomeImageToken) {
           try {
             const image = new ImageAttachment({ token: this.welcomeImageToken });
@@ -531,7 +513,6 @@ export class App {
           }
         }
         
-        // Добавляем клавиатуру (всегда добавляем, даже если есть изображение)
         const keyboard = keyboardService.getMainMenu(activeChat?.title ?? null);
         attachments.push(keyboard);
         
@@ -547,11 +528,9 @@ export class App {
         return;
       }
 
-      // Используем активный чат пользователя
       const selectedChatId = await userChatService.getSelectedChat(userId);
-      const chatId = selectedChatId ? toInt(selectedChatId) : null;
+      const chatId = selectedChatId;
 
-      // Если чат не выбран, предлагаем выбрать
       if (!chatId) {
         logger.userAction(userId, "Задан вопрос без выбранного чата", { question: text.substring(0, 50) });
         const replyText = [
@@ -565,33 +544,28 @@ export class App {
         return;
       }
 
-      logger.userAction(userId, "Задан вопрос ассистенту", { chatId, question: text.substring(0, 50) });
-      const answer = await assistantService.answerPersonalQuestion(userId, chatId, text, this.bot.api);
+      logger.userAction(userId, "Задан вопрос ассистенту", { chatId: Number(chatId), question: text.substring(0, 50) });
+      const answer = await assistantService.answerPersonalQuestion(userId, chatId ? Number(chatId) : null, text, this.bot.api);
       await ctx.reply(answer.body);
       logger.success("Ответ ассистента отправлен", { userId, chatId });
       return;
     }
 
-    // В групповых чатах обрабатываем только если бот упомянут или это команда
-    // Получаем user_id бота из botInfo (BotInfo extends UserWithPhoto extends User which has user_id)
     const botInfo = this.bot.botInfo;
     const botUserId = botInfo ? toInt((botInfo as { user_id: number }).user_id) : undefined;
     const isMentioned = this.isBotMentioned(message, botUserId);
 
     if (!isMentioned) {
-      // Бот не упомянут - только сохраняем сообщение, но не отвечаем
-      // Тихо обрабатываем задачи и важные сообщения в фоне (без ответа в чат)
       try {
-        // Обрабатываем задачи тихо (без ответа в чат)
         await taskService.processIncomingMessage(message);
         
-        // Проверяем важность сообщения (уведомления отправляются в личку, не в чат)
         const importance = await importantMessageService.checkIfImportant(message);
         if (importance.isImportant) {
           try {
-            const chatId = toInt(message.recipient.chat_id);
+            const chatId = toBigInt(message.recipient.chat_id);
             if (chatId) {
-              const members = await this.bot.api.getChatMembers(chatId);
+              const chatIdNum = Number(chatId);
+              const members = await this.bot.api.getChatMembers(chatIdNum);
               if (members?.members) {
                 await importantMessageService.notifyUsersAboutImportantMessage(
                   message,
@@ -608,7 +582,7 @@ export class App {
           } catch (error) {
             logger.warn("Не удалось уведомить пользователей о важном сообщении", {
               location: "handleIncomingMessage.notifyImportant",
-              chatId: toInt(message.recipient.chat_id),
+              chatId: toBigInt(message.recipient.chat_id),
               error,
             });
           }
@@ -617,21 +591,20 @@ export class App {
         logger.error("Не удалось обработать задачи из сообщения", {
           location: "handleIncomingMessage.processTasks",
           userId: toInt(message.sender?.user_id),
-          chatId: toInt(message.recipient.chat_id),
+          chatId: toBigInt(message.recipient.chat_id),
           error,
         });
       }
       return;
     }
 
-    // Бот упомянут - обрабатываем и отвечаем
     try {
       const createdTasks = await taskService.processIncomingMessage(message);
       if (createdTasks.length > 0) {
         const response = [
           "Нашёл потенциальные задачи:",
           formatBulletList(
-            createdTasks.map((task) => {
+            createdTasks.map((task: Awaited<ReturnType<typeof taskService.processIncomingMessage>>[number]) => {
               const due = task.dueDate ? `дедлайн ${formatDate(task.dueDate)}` : "без срока";
               const assignee = task.assigneeName ? `ответственный: ${task.assigneeName}` : "ответственный не назначен";
               return `${task.title} — ${due}, ${assignee}`;
@@ -642,11 +615,9 @@ export class App {
 
         await ctx.reply(response);
       } else {
-        // Если задач не найдено, но бот упомянут, можно ответить что-то полезное
         await ctx.reply("Привет! Я обработал сообщение. Используйте команды для работы со мной: /help");
       }
 
-      // Проверяем важность сообщения (уведомления отправляются в личку)
       const importance = await importantMessageService.checkIfImportant(message);
       if (importance.isImportant) {
         try {
@@ -732,7 +703,6 @@ export class App {
       const text = this.getHelpText();
       const isPersonal = ctx.message?.recipient?.chat_type === "dialog";
       
-      // Получаем информацию об активном чате для отображения в меню
       const activeChat = userId ? await this.getActiveChatInfo(userId) : null;
       const keyboard = keyboardService.getMainMenu(activeChat?.title ?? null);
       
@@ -761,26 +731,18 @@ export class App {
     }
   }
 
-  /**
-   * Получает ID чата для команды:
-   * - Если команда из группового чата, использует этот чат
-   * - Если команда из личного чата, использует выбранный активный чат
-   * - Автоматически добавляет групповой чат в список пользователя при первом использовании
-   */
-  private async getChatIdForCommand(ctx: CommandContext): Promise<number | null> {
+
+  private async getChatIdForCommand(ctx: CommandContext): Promise<bigint | null> {
     const userId = toInt(ctx.user?.user_id);
     const isPersonal = ctx.message.recipient.chat_type === "dialog";
     
-    // If command is from a group chat, use that chat and auto-add to user's list
-    const contextChatId = toInt(ctx.chatId);
+    const contextChatId = toBigInt(ctx.chatId);
     if (contextChatId && !isPersonal) {
-      // Auto-add group chat to user's list if not already there
       if (userId) {
         try {
           const chatTitle = ctx.chat?.title ?? undefined;
-          await userChatService.addChat(userId, contextChatId, chatTitle);
-          // Auto-select this chat as active
-          await userChatService.selectChat(userId, contextChatId);
+          await userChatService.addChat(userId, contextChatId.toString(), chatTitle);
+          await userChatService.selectChat(userId, contextChatId.toString());
         } catch (error) {
           logger.warn("Не удалось автоматически добавить/выбрать чат", {
             userId,
@@ -793,35 +755,36 @@ export class App {
       return contextChatId;
     }
 
-    // If command is from personal chat, use selected chat
     if (!userId) {
       return null;
     }
 
     const selectedChatId = await userChatService.getSelectedChat(userId);
-    if (selectedChatId) {
-      const numericChatId = toInt(selectedChatId);
-      return numericChatId ?? null;
-    }
-
-    return null;
+    return selectedChatId;
   }
 
-  /**
-   * Получает информацию о текущем активном чате для пользователя
-   */
-  private async getActiveChatInfo(userId: number): Promise<{ id: string; title: string | null } | null> {
+  private async getActiveChatInfo(userId: number): Promise<{ id: number; title: string | null } | null> {
     const selectedChatId = await userChatService.getSelectedChat(userId);
     if (!selectedChatId) {
       return null;
     }
 
     const userChats = await userChatService.getUserChats(userId);
-    const selectedChat = userChats.find((c: { chatId: string }) => c.chatId === selectedChatId);
+    if (!userChats || userChats.length === 0) {
+      return null;
+    }
+    const selectedChat = userChats.find((c) => {
+      const cId = toBigInt(c.chatId);
+      return cId === selectedChatId;
+    });
     
+    if (!selectedChatId) {
+      return null;
+    }
+    const id = Number(selectedChatId);
     return selectedChat
-      ? { id: selectedChatId, title: selectedChat.chatTitle }
-      : { id: selectedChatId, title: null };
+      ? { id, title: selectedChat.chatTitle }
+      : { id, title: null };
   }
 
   private async handleDigestCommand(ctx: CommandContext) {
@@ -829,7 +792,6 @@ export class App {
       const userId = toInt(ctx.user?.user_id);
       logger.command(userId ?? undefined, "digest", ctx.chatId);
       
-      // Извлекаем аргументы команды - все что после "/digest "
       const fullText = ctx.message.body.text ?? "";
       const argsText = fullText.replace(/^\/digest\s+/i, "").trim();
       const rawArgs = argsText ? argsText.split(/\s+/) : [];
@@ -874,7 +836,6 @@ export class App {
       logger.userAction(userId ?? undefined, "Генерация дайджеста", { chatId, chatTitle });
       const summary = await digestService.generateDigest(chatId, chatTitle, range, digestOptions ?? {}, this.bot.api);
       
-      // Отправляем дайджест с markdown форматированием
       await ctx.reply(summary, { format: "markdown" });
       logger.success("Дайджест сгенерирован и отправлен", { userId, chatId: String(chatId) });
     } catch (error) {
@@ -916,7 +877,6 @@ export class App {
     const tasks = await taskService.getUpcomingTasks(chatId, addDays(new Date(), 7));
     if (tasks.length === 0) {
       const text = "На ближайшую неделю дедлайнов не найдено.";
-      // Если это callback, обновляем сообщение
       if (ctx.update?.update_type === "message_callback") {
         await ctx.answerOnCallback({
           message: { text, attachments: [keyboardService.getBackMenu()] },
@@ -927,8 +887,9 @@ export class App {
       return;
     }
 
+    type TaskWithReminders = Awaited<ReturnType<typeof taskService.getUpcomingTasks>>[number];
     const summary = formatBulletList(
-      tasks.map((task) => {
+      tasks.map((task: TaskWithReminders) => {
         const parts = [task.title];
         if (task.dueDate) parts.push(`дедлайн ${formatDate(task.dueDate)}`);
         if (task.assigneeName) parts.push(`ответственный: ${task.assigneeName}`);
@@ -938,7 +899,6 @@ export class App {
 
     const text = `📌 Дедлайны на ближайшую неделю:\n\n${summary}`;
 
-    // Если это callback, обновляем сообщение
     if (ctx.update?.update_type === "message_callback") {
       await ctx.answerOnCallback({
         message: { text, attachments: [keyboardService.getBackMenu()] },
@@ -956,7 +916,6 @@ export class App {
     }
 
     try {
-      // Получаем задачи пользователя из всех чатов
       const userTasks = await taskService.getPersonalTasks(userId, addDays(new Date(), 60));
       
       if (userTasks.length === 0) {
@@ -967,12 +926,12 @@ export class App {
         return;
       }
 
-      // Группируем задачи по датам
       const tasksByDate = new Map<string, typeof userTasks>();
-      userTasks.forEach((task) => {
+      type TaskWithReminders = Awaited<ReturnType<typeof taskService.getPersonalTasks>>[number];
+      userTasks.forEach((task: TaskWithReminders) => {
         if (task.dueDate) {
           const dateStr = formatDate(task.dueDate, "Europe/Moscow");
-          const dateKey = dateStr.split(" ")[0] ?? dateStr; // Только дата
+          const dateKey = dateStr.split(" ")[0] ?? dateStr;
           if (!tasksByDate.has(dateKey)) {
             tasksByDate.set(dateKey, []);
           }
@@ -980,17 +939,16 @@ export class App {
         }
       });
 
-      // Формируем календарь
       const calendarText: string[] = [];
       calendarText.push("📅 **Ваш календарь дедлайнов:**\n");
       
-      // Сортируем даты
       const sortedDates = Array.from(tasksByDate.keys()).sort();
       
       sortedDates.forEach((dateKey) => {
         const tasks = tasksByDate.get(dateKey)!;
         calendarText.push(`\n**${dateKey}:**`);
-        tasks.forEach((task) => {
+        type TaskWithReminders = Awaited<ReturnType<typeof taskService.getPersonalTasks>>[number];
+        tasks.forEach((task: TaskWithReminders) => {
           const parts = [task.title];
           if (task.dueDate) {
             const dateStr = formatDate(task.dueDate, "Europe/Moscow");
@@ -1009,7 +967,6 @@ export class App {
       calendarText.push(`\n\n**Всего задач:** ${userTasks.length}`);
       calendarText.push(`\n**Ближайший дедлайн:** ${formatDate(userTasks[0]?.dueDate ?? new Date(), "Europe/Moscow")}`);
 
-      // Пытаемся экспортировать в ICS
       const calendar = await calendarService.exportUserCalendar(userId);
       
       if (calendar) {
@@ -1057,7 +1014,6 @@ export class App {
       return;
     }
 
-    // Извлекаем аргументы команды - все что после "/search "
     const fullText = ctx.message.body.text ?? "";
     const query = fullText.replace(/^\/search\s+/i, "").trim();
 
@@ -1072,7 +1028,6 @@ export class App {
     }
 
     try {
-      // Выполняем поиск параллельно
       const [materials, messages] = await Promise.all([
         searchService.searchMaterials(chatId, query, 10),
         searchService.searchMessages(chatId, query, 10),
@@ -1093,9 +1048,7 @@ export class App {
         results.push(`📎 Материалы (${materials.length}):`);
         materials.forEach((m, index) => {
           const title = m.title.length > 60 ? `${m.title.substring(0, 60)}...` : m.title;
-          // Если есть ссылка, делаем название кликабельной ссылкой в Markdown
           if (m.link) {
-            // Убеждаемся, что ссылка имеет протокол
             let linkUrl = m.link.trim();
             if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) {
               linkUrl = `https://${linkUrl}`;
@@ -1105,7 +1058,6 @@ export class App {
             results.push(`${index + 1}. **${title}**`);
           }
           
-          // Добавляем краткую сводку, если есть
           if (m.description) {
             const desc = m.description.length > 100 ? `${m.description.substring(0, 100)}...` : m.description;
             results.push(`   ${desc}`);
@@ -1116,7 +1068,7 @@ export class App {
 
       if (messages.length > 0) {
         results.push(`💬 Сообщения (${messages.length}):`);
-        messages.forEach((m, index) => {
+        messages.forEach((m: { text: string | null; senderName: string | null; timestamp: Date }, index: number) => {
           const text = sanitizeText(m.text ?? "");
           const preview = text.length > 80 ? `${text.substring(0, 80)}...` : text;
           const sender = m.senderName ?? "Участник";
@@ -1165,10 +1117,9 @@ export class App {
       return;
     }
 
-    const materials = await searchService.getAllMaterials(chatId, 30);
+    const materials = await searchService.getAllMaterials(chatId ? chatId.toString() : "", 30);
     if (materials.length === 0) {
       const text = "В чате пока нет материалов.";
-      // Если это callback, обновляем сообщение
       if (ctx.update?.update_type === "message_callback") {
         await ctx.answerOnCallback({
           message: { text, attachments: [keyboardService.getBackMenu()] },
@@ -1179,7 +1130,6 @@ export class App {
       return;
     }
 
-    // Используем функцию форматирования материалов для единообразия
     const formattedMaterials = formatMaterials(materials);
 
     const text = [
@@ -1188,7 +1138,6 @@ export class App {
       formattedMaterials,
     ].join("\n");
 
-    // Если это callback, обновляем сообщение
     if (ctx.update?.update_type === "message_callback") {
       await ctx.answerOnCallback({
         message: { text, attachments: [keyboardService.getBackMenu()], format: "markdown" },
@@ -1217,7 +1166,7 @@ export class App {
       [
         `📋 Задачи в чате (${tasks.length}):`,
         formatBulletList(
-          tasks.map((task) => {
+          tasks.map((task: Awaited<ReturnType<typeof taskService.getAllTasks>>[number]) => {
             const parts = [task.title];
             if (task.dueDate) {
               parts.push(`дедлайн ${formatDate(task.dueDate)}`);
@@ -1241,9 +1190,7 @@ export class App {
     }
 
     const userChats = await userChatService.getUserChats(userId);
-    const selectedChatId = await userChatService.getSelectedChat(userId);
-
-    if (userChats.length === 0) {
+    if (!userChats || userChats.length === 0) {
       await ctx.reply(
         [
           "У вас пока нет добавленных чатов.",
@@ -1254,20 +1201,26 @@ export class App {
       );
       return;
     }
+    const selectedChatId = await userChatService.getSelectedChat(userId);
 
-    const chatList = userChats.map((chat: { chatId: string; chatTitle: string | null }, index: number) => {
-      const isSelected = chat.chatId === selectedChatId;
+    const chatList = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }, index: number) => {
+      const chatIdNum = toBigInt(chat.chatId);
+      const isSelected = chatIdNum === selectedChatId;
       const marker = isSelected ? "✅" : `${index + 1}.`;
-      return `${marker} ${chat.chatTitle ?? `Чат ${chat.chatId}`}${isSelected ? " (выбран)" : ""}`;
+      const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+      return `${marker} ${chat.chatTitle ?? `Чат ${chatIdDisplay}`}${isSelected ? " (выбран)" : ""}`;
     });
 
-    // Создаем кнопки для выбора чата
-    const chats = userChats.map((chat: { chatId: string; chatTitle: string | null }) => ({
-      id: Number.parseInt(chat.chatId, 10),
-      title: chat.chatTitle ?? `Чат ${chat.chatId}`,
-    }));
+    const chats = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }) => {
+      const chatIdNum = toBigInt(chat.chatId);
+      const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+      return {
+        id: chatIdDisplay,
+        title: chat.chatTitle ?? `Чат ${chatIdDisplay}`,
+      };
+    });
 
-    const selectedChatIdNum = selectedChatId ? Number.parseInt(selectedChatId, 10) : undefined;
+    const selectedChatIdNum = selectedChatId ? Number(selectedChatId) : undefined;
 
     const text = [
       "📋 Ваши чаты:",
@@ -1293,7 +1246,6 @@ export class App {
     const chatNumberOrId = args[0];
 
     if (!chatNumberOrId) {
-      // Show list of chats
       await this.handleChatsCommand(ctx);
       await ctx.reply(
         "\nИспользуйте: /select_chat <номер> или /select_chat <chat_id> для выбора чата.",
@@ -1301,18 +1253,26 @@ export class App {
       return;
     }
 
-    // Try to parse as number (index) or chat ID
     const chatIndex = Number.parseInt(chatNumberOrId, 10);
     const userChats = await userChatService.getUserChats(userId);
+    if (!userChats || userChats.length === 0) {
+      await ctx.reply("Чат не найден. Используйте /chats для просмотра списка чатов.");
+      return;
+    }
 
     let selectedChat;
     if (!Number.isNaN(chatIndex) && chatIndex > 0 && chatIndex <= userChats.length) {
-      // Select by index
       selectedChat = userChats[chatIndex - 1];
     } else {
-      // Try to find by chat ID
-      const chatId = ensureIdString(chatNumberOrId);
-      selectedChat = userChats.find((c: { chatId: string }) => c.chatId === chatId);
+      const chatId = toBigInt(chatNumberOrId);
+      if (!chatId) {
+        await ctx.reply("Не удалось определить ID чата.");
+        return;
+      }
+      selectedChat = userChats.find((c: { chatId: bigint | number | string }) => {
+        const cId = toBigInt(c.chatId);
+        return cId === chatId;
+      });
     }
 
     if (!selectedChat) {
@@ -1321,7 +1281,12 @@ export class App {
     }
 
     try {
-      await userChatService.selectChat(userId, selectedChat.chatId);
+      const selectedChatIdBigInt = toBigInt(selectedChat.chatId);
+      if (!selectedChatIdBigInt) {
+        await ctx.reply("Ошибка: не удалось определить ID чата.");
+        return;
+      }
+      await userChatService.selectChat(userId, Number(selectedChatIdBigInt));
       await ctx.reply(
         `✅ Выбран чат: ${selectedChat.chatTitle ?? `Чат ${selectedChat.chatId}`}`,
       );
@@ -1360,8 +1325,6 @@ export class App {
             const membersResponse = await this.bot.api.getChatMembers(chatId, { user_ids });
             return membersResponse;
           } catch (error) {
-            // Если пользователь не является участником чата, API вернет ошибку
-            // Пользователь не является участником чата - это нормально, не логируем
             return { members: [] };
           }
         },
@@ -1386,11 +1349,9 @@ export class App {
       return { from, to };
     }
 
-    // Используем chrono-node для парсинга дат
     const chrono = require("chrono-node");
     const now = new Date();
     
-    // Специальные случаи
     if (arg === "сегодня" || arg === "today") {
       return { from: startOfDay(), to: endOfDay() };
     }
@@ -1404,7 +1365,6 @@ export class App {
       return { from: startOfWeek(), to: endOfWeek() };
     }
 
-    // Парсинг диапазона через ":"
     if (arg.includes(":")) {
       const parts = arg.split(":").map(p => p.trim());
       if (parts.length === 2) {
@@ -1416,13 +1376,11 @@ export class App {
       }
     }
 
-    // Парсинг одной даты
     const parsed = chrono.parseDate(arg, now);
     if (parsed) {
       return { from: startOfDay(parsed), to: endOfDay(parsed) };
     }
 
-    // Попытка парсить как ISO дату (YYYY-MM-DD)
     const isoDate = /^(\d{4}-\d{2}-\d{2})$/.exec(arg);
     if (isoDate) {
       const date = new Date(`${isoDate[1]}T00:00:00`);
@@ -1457,16 +1415,17 @@ export class App {
         }
         await this.bot.api.sendMessageToUser(numericUserId, messageLines.join("\n"));
       } else {
-        const numericChatId = toInt(task.chatId);
+        const numericChatId = toBigInt(task.chatId);
         if (!numericChatId) {
-          logger.error("Не удалось преобразовать chatId в число для напоминания", {
+          logger.error("Не удалось преобразовать chatId в BigInt для напоминания", {
             chatId: task.chatId,
             location: "handleReminder",
             error: new Error("Invalid chatId"),
           });
           return;
         }
-        await this.bot.api.sendMessageToChat(numericChatId, messageLines.join("\n"));
+        const chatIdNum = Number(numericChatId);
+        await this.bot.api.sendMessageToChat(chatIdNum, messageLines.join("\n"));
       }
     } catch (error) {
       logger.error("Ошибка отправки напоминания", {
@@ -1478,13 +1437,9 @@ export class App {
     }
   };
 
-  /**
-   * Регистрация обработчиков для callback кнопок
-   */
+
   private registerButtonHandlers() {
-    // Обработчик кнопки "Начать" (start button)
-    // В MAX API кнопка "Начать" может отправлять callback с action "start" или payload в событии bot_started
-    // Обрабатываем оба варианта: "start" и "action:start"
+
     this.bot.action("start", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -1494,10 +1449,8 @@ export class App {
 
       await preferenceService.getOrCreate(userId);
       
-      // Получаем имя пользователя
       const userName = ctx.user?.name ?? "друг";
       
-      // Получаем информацию об активном чате
       const activeChat = await this.getActiveChatInfo(userId);
       
       const welcomeText = [
@@ -1517,10 +1470,8 @@ export class App {
         "• «есть задачи на завтра?»",
       ].join("\n");
       
-      // Подготавливаем вложения: изображение (из кэша) + клавиатура
       const attachments: AttachmentRequest[] = [];
       
-      // Используем предзагруженное изображение из кэша
       if (this.welcomeImageToken) {
         try {
           const image = new ImageAttachment({ token: this.welcomeImageToken });
@@ -1534,7 +1485,6 @@ export class App {
         }
       }
       
-      // Добавляем клавиатуру
       attachments.push(keyboardService.getMainMenu(activeChat?.title ?? null));
       
       await ctx.answerOnCallback({
@@ -1544,7 +1494,6 @@ export class App {
       logger.userAction(userId, "Кнопка 'Начать' нажата", { userName });
     });
 
-    // Обработчик кнопки "Начать" с префиксом "action:"
     this.bot.action("action:start", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -1554,10 +1503,8 @@ export class App {
 
       await preferenceService.getOrCreate(userId);
       
-      // Получаем имя пользователя
       const userName = ctx.user?.name ?? "друг";
       
-      // Получаем информацию об активном чате
       const activeChat = await this.getActiveChatInfo(userId);
       
       const welcomeText = [
@@ -1577,10 +1524,8 @@ export class App {
         "• «есть задачи на завтра?»",
       ].join("\n");
       
-      // Подготавливаем вложения: изображение (из кэша) + клавиатура
       const attachments: AttachmentRequest[] = [];
       
-      // Используем предзагруженное изображение из кэша
       if (this.welcomeImageToken) {
         try {
           const image = new ImageAttachment({ token: this.welcomeImageToken });
@@ -1594,7 +1539,6 @@ export class App {
         }
       }
       
-      // Добавляем клавиатуру
       attachments.push(keyboardService.getMainMenu(activeChat?.title ?? null));
       
       await ctx.answerOnCallback({
@@ -1604,7 +1548,6 @@ export class App {
       logger.userAction(userId, "Кнопка 'Начать' нажата (action:start)", { userName });
     });
 
-    // Главное меню
     this.bot.action("action:main_menu", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       const activeChat = userId ? await this.getActiveChatInfo(userId) : null;
@@ -1618,7 +1561,6 @@ export class App {
       });
     });
 
-    // Помощь
     this.bot.action("action:help", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -1637,7 +1579,6 @@ export class App {
       });
     });
 
-    // Чаты
     this.bot.action("action:chats", async (ctx) => {
       const text = "📋 Управление чатами:";
       await ctx.answerOnCallback({
@@ -1652,9 +1593,7 @@ export class App {
         return;
       }
 
-      // Автоматическая синхронизация при входе в раздел чатов
       try {
-        // Выполняем синхронизацию
         const syncCount = await userChatService.syncChatsFromMax(userId, {
           getAllChats: async () => {
             const response = await this.bot.api.getAllChats();
@@ -1673,11 +1612,8 @@ export class App {
           },
         });
 
-        // Получаем обновленный список чатов
         const userChats = await userChatService.getUserChats(userId);
-        const selectedChatId = await userChatService.getSelectedChat(userId);
-
-        if (userChats.length === 0) {
+        if (!userChats || userChats.length === 0) {
           await ctx.answerOnCallback({
             message: {
               text: "У вас пока нет чатов. Чат будет добавлен автоматически, когда вы отправите сообщение в групповой чат.",
@@ -1687,18 +1623,25 @@ export class App {
           return;
         }
 
-        const chatList = userChats.map((chat: { chatId: string; chatTitle: string | null }, index: number) => {
-          const isSelected = chat.chatId === selectedChatId;
+        const selectedChatId = await userChatService.getSelectedChat(userId);
+        const chatList = userChats.map((chat, index: number) => {
+          const chatIdNum = toBigInt(chat.chatId);
+          const isSelected = chatIdNum === selectedChatId;
           const marker = isSelected ? "✅" : `${index + 1}.`;
-          return `${marker} ${chat.chatTitle ?? `Чат ${chat.chatId}`}${isSelected ? " (выбран)" : ""}`;
+          const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+          return `${marker} ${chat.chatTitle ?? `Чат ${chatIdDisplay}`}${isSelected ? " (выбран)" : ""}`;
         });
 
-        const chats = userChats.map((chat: { chatId: string; chatTitle: string | null }) => ({
-          id: Number.parseInt(chat.chatId, 10),
-          title: chat.chatTitle ?? `Чат ${chat.chatId}`,
-        }));
+    const chats = userChats.map((chat) => {
+      const chatIdNum = toBigInt(chat.chatId);
+      const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+      return {
+        id: chatIdDisplay,
+        title: chat.chatTitle ?? `Чат ${chatIdDisplay}`,
+      };
+    });
 
-        const selectedChatIdNum = selectedChatId ? Number.parseInt(selectedChatId, 10) : undefined;
+        const selectedChatIdNum = selectedChatId ?? undefined;
 
         const text = [
           `✅ Синхронизировано ${syncCount} чатов`,
@@ -1711,7 +1654,7 @@ export class App {
         ].join("\n");
 
         await ctx.answerOnCallback({
-          message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum)] },
+          message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum ? Number(selectedChatIdNum) : undefined)] },
         });
       } catch (error) {
         logger.error("Ошибка синхронизации чатов", {
@@ -1720,11 +1663,8 @@ export class App {
           error,
         });
         
-        // Показываем список чатов даже при ошибке синхронизации
         const userChats = await userChatService.getUserChats(userId);
-        const selectedChatId = await userChatService.getSelectedChat(userId);
-
-        if (userChats.length === 0) {
+        if (!userChats || userChats.length === 0) {
           await ctx.answerOnCallback({
             message: {
               text: "Ошибка синхронизации чатов. Попробуйте позже.",
@@ -1734,18 +1674,25 @@ export class App {
           return;
         }
 
-        const chatList = userChats.map((chat: { chatId: string; chatTitle: string | null }, index: number) => {
-          const isSelected = chat.chatId === selectedChatId;
+        const selectedChatId = await userChatService.getSelectedChat(userId);
+        const chatList = userChats.map((chat, index: number) => {
+          const chatIdNum = toBigInt(chat.chatId);
+          const isSelected = chatIdNum === selectedChatId;
           const marker = isSelected ? "✅" : `${index + 1}.`;
-          return `${marker} ${chat.chatTitle ?? `Чат ${chat.chatId}`}${isSelected ? " (выбран)" : ""}`;
+          const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+          return `${marker} ${chat.chatTitle ?? `Чат ${chatIdDisplay}`}${isSelected ? " (выбран)" : ""}`;
         });
 
-        const chats = userChats.map((chat: { chatId: string; chatTitle: string | null }) => ({
-          id: Number.parseInt(chat.chatId, 10),
-          title: chat.chatTitle ?? `Чат ${chat.chatId}`,
-        }));
+    const chats = userChats.map((chat) => {
+      const chatIdNum = toBigInt(chat.chatId);
+      const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+      return {
+        id: chatIdDisplay,
+        title: chat.chatTitle ?? `Чат ${chatIdDisplay}`,
+      };
+    });
 
-        const selectedChatIdNum = selectedChatId ? Number.parseInt(selectedChatId, 10) : undefined;
+        const selectedChatIdNum = selectedChatId ?? undefined;
 
         const text = [
           "⚠️ Ошибка синхронизации, показаны сохраненные чаты:",
@@ -1758,7 +1705,7 @@ export class App {
         ].join("\n");
 
         await ctx.answerOnCallback({
-          message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum)] },
+          message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum ? Number(selectedChatIdNum) : undefined)] },
         });
       }
     });
@@ -1771,7 +1718,6 @@ export class App {
       }
 
       try {
-        // Выполняем синхронизацию напрямую, без создания нового сообщения
         const count = await userChatService.syncChatsFromMax(userId, {
           getAllChats: async () => {
             const response = await this.bot.api.getAllChats();
@@ -1790,23 +1736,28 @@ export class App {
           },
         });
         
-        // После синхронизации обновляем меню чатов
         const userChats = await userChatService.getUserChats(userId);
         const selectedChatId = await userChatService.getSelectedChat(userId);
         
         if (userChats.length > 0) {
-          const chatList = userChats.map((chat: { chatId: string; chatTitle: string | null }, index: number) => {
-            const isSelected = chat.chatId === selectedChatId;
+          const chatList = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }, index: number) => {
+            const chatIdNum = toBigInt(chat.chatId);
+            const isSelected = chatIdNum === selectedChatId;
             const marker = isSelected ? "✅" : `${index + 1}.`;
-            return `${marker} ${chat.chatTitle ?? `Чат ${chat.chatId}`}${isSelected ? " (выбран)" : ""}`;
+            const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+            return `${marker} ${chat.chatTitle ?? `Чат ${chatIdDisplay}`}${isSelected ? " (выбран)" : ""}`;
           });
 
-          const chats = userChats.map((chat: { chatId: string; chatTitle: string | null }) => ({
-            id: Number.parseInt(chat.chatId, 10),
-            title: chat.chatTitle ?? `Чат ${chat.chatId}`,
-          }));
+          const chats = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }) => {
+            const chatIdNum = toBigInt(chat.chatId);
+            const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+            return {
+              id: chatIdDisplay,
+              title: chat.chatTitle ?? `Чат ${chatIdDisplay}`,
+            };
+          });
 
-          const selectedChatIdNum = selectedChatId ? Number.parseInt(selectedChatId, 10) : undefined;
+          const selectedChatIdNum = selectedChatId ? Number(selectedChatId) : undefined;
 
           const text = [
             `✅ Синхронизировано ${count} чатов.`,
@@ -1818,9 +1769,8 @@ export class App {
             "Выберите чат кнопкой ниже:",
           ].join("\n");
 
-          // Обновляем сообщение с новым списком чатов
           await ctx.answerOnCallback({
-            message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum)] },
+            message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum ? Number(selectedChatIdNum) : undefined)] },
           });
         } else {
           await ctx.answerOnCallback({
@@ -1837,7 +1787,6 @@ export class App {
       }
     });
 
-    // Обработчик выбора чата по кнопке (поддерживает отрицательные ID)
     this.bot.action(/^action:select_chat:(-?\d+)$/, async (ctx) => {
       const chatIdStr = ctx.match?.[1];
       if (!chatIdStr) {
@@ -1852,25 +1801,34 @@ export class App {
       }
 
       try {
-        // Сохраняем chatId как строку (может быть отрицательным)
         await userChatService.selectChat(userId, chatIdStr);
         const userChats = await userChatService.getUserChats(userId);
-        const selectedChat = userChats.find((c: { chatId: string }) => c.chatId === chatIdStr);
-        const selectedChatTitle = selectedChat?.chatTitle ?? `Чат ${chatIdStr}`;
+        if (!userChats) return;
+        const chatIdNum = toBigInt(chatIdStr);
+        if (!chatIdNum) return;
+        const selectedChat = userChats.find((c: { chatId: bigint | number | string }) => {
+          const cId = toBigInt(c.chatId);
+          return cId === chatIdNum;
+        });
+        const selectedChatTitle = selectedChat?.chatTitle ?? `Чат ${Number(chatIdNum)}`;
         
-        // Обновляем меню с выделенным чатом
-        const chats = userChats.map((chat: { chatId: string; chatTitle: string | null }) => ({
-          id: Number.parseInt(chat.chatId, 10),
-          title: chat.chatTitle ?? `Чат ${chat.chatId}`,
-        }));
-
-        const chatList = userChats.map((chat: { chatId: string; chatTitle: string | null }, index: number) => {
-          const isSelected = chat.chatId === chatIdStr;
-          const marker = isSelected ? "✅" : `${index + 1}.`;
-          return `${marker} ${chat.chatTitle ?? `Чат ${chat.chatId}`}${isSelected ? " (выбран)" : ""}`;
+        const chats = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }) => {
+          const cId = toBigInt(chat.chatId);
+          return {
+            id: cId ? Number(cId) : 0,
+            title: chat.chatTitle ?? `Чат ${cId ? Number(cId) : 0}`,
+          };
         });
 
-        const selectedChatIdNum = Number.parseInt(chatIdStr, 10);
+        const chatList = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }, index: number) => {
+          const cId = toBigInt(chat.chatId);
+          const isSelected = cId === chatIdNum;
+          const marker = isSelected ? "✅" : `${index + 1}.`;
+          const chatIdDisplay = cId ? Number(cId) : 0;
+          return `${marker} ${chat.chatTitle ?? `Чат ${chatIdDisplay}`}${isSelected ? " (выбран)" : ""}`;
+        });
+
+        const selectedChatIdNum = toBigInt(chatIdStr);
 
         const text = [
           "📋 Ваши чаты:",
@@ -1884,7 +1842,7 @@ export class App {
 
         await ctx.answerOnCallback({
           notification: `✅ Выбран чат: ${selectedChatTitle}`,
-          message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum)] },
+          message: { text, attachments: [keyboardService.getChatSelectionMenu(chats, selectedChatIdNum ? Number(selectedChatIdNum) : undefined)] },
         });
       } catch (error) {
         logger.error("Ошибка выбора чата из кнопки", {
@@ -1906,21 +1864,24 @@ export class App {
       }
 
       const userChats = await userChatService.getUserChats(userId);
-      const selectedChatId = await userChatService.getSelectedChat(userId);
-      
-      if (userChats.length === 0) {
+      if (!userChats || userChats.length === 0) {
         await ctx.answerOnCallback({
           notification: "У вас нет чатов. Используйте /sync_chats для синхронизации.",
         });
         return;
       }
 
-      const chats = userChats.map((chat: { chatId: string; chatTitle: string | null }) => ({
-        id: Number.parseInt(chat.chatId, 10),
-        title: chat.chatTitle ?? `Чат ${chat.chatId}`,
-      }));
+      const selectedChatId = await userChatService.getSelectedChat(userId);
+      const chats = userChats.map((chat: { chatId: bigint | number | string; chatTitle: string | null }) => {
+        const chatIdNum = toBigInt(chat.chatId);
+        const chatIdDisplay = chatIdNum ? Number(chatIdNum) : 0;
+        return {
+          id: chatIdDisplay,
+          title: chat.chatTitle ?? `Чат ${chatIdDisplay}`,
+        };
+      });
 
-      const selectedChatIdNum = selectedChatId ? Number.parseInt(selectedChatId, 10) : undefined;
+      const selectedChatIdNum = selectedChatId ? Number(selectedChatId) : undefined;
 
       const text = "Выберите чат:";
       await ctx.answerOnCallback({
@@ -1928,7 +1889,6 @@ export class App {
       });
     });
 
-    // Задачи
     this.bot.action("action:tasks", async (ctx) => {
       const text = "✅ Управление задачами:";
       await ctx.answerOnCallback({
@@ -1951,13 +1911,7 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
-      const tasks = await taskService.getAllTasks(numericChatId, 30);
+      const tasks = await taskService.getAllTasks(chatId, 30);
       if (tasks.length === 0) {
         await ctx.answerOnCallback({
           message: { text: "В чате пока нет задач.", attachments: [keyboardService.getBackMenu()] },
@@ -1965,8 +1919,9 @@ export class App {
         return;
       }
 
+      type TaskWithReminders = Awaited<ReturnType<typeof taskService.getAllTasks>>[number];
       const summary = formatBulletList(
-        tasks.map((task) => {
+        tasks.map((task: TaskWithReminders) => {
           const parts = [task.title];
           if (task.dueDate) {
             parts.push(`дедлайн ${formatDate(task.dueDate)}`);
@@ -2001,20 +1956,15 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
-      const tasks = await taskService.getUpcomingTasks(numericChatId, addDays(new Date(), 7));
+      const tasks = await taskService.getUpcomingTasks(chatId, addDays(new Date(), 7));
       if (tasks.length === 0) {
         await ctx.answerOnCallback({ notification: "На неделю задач не найдено" });
         return;
       }
 
+      type TaskWithReminders = Awaited<ReturnType<typeof taskService.getUpcomingTasks>>[number];
       const summary = formatBulletList(
-        tasks.map((task) => {
+        tasks.map((task: TaskWithReminders) => {
           const parts = [task.title];
           if (task.dueDate) parts.push(`дедлайн ${formatDate(task.dueDate)}`);
           if (task.assigneeName) parts.push(`ответственный: ${task.assigneeName}`);
@@ -2042,21 +1992,16 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
       const tomorrow = addDays(new Date(), 1);
-      const tasks = await taskService.getUpcomingTasks(numericChatId, endOfDay(tomorrow));
+      const tasks = await taskService.getUpcomingTasks(chatId, endOfDay(tomorrow));
       if (tasks.length === 0) {
         await ctx.answerOnCallback({ notification: "На завтра задач не найдено" });
         return;
       }
 
+      type TaskWithReminders = Awaited<ReturnType<typeof taskService.getUpcomingTasks>>[number];
       const summary = formatBulletList(
-        tasks.map((task) => {
+        tasks.map((task: TaskWithReminders) => {
           const parts = [task.title];
           if (task.dueDate) parts.push(`дедлайн ${formatDate(task.dueDate)}`);
           if (task.assigneeName) parts.push(`ответственный: ${task.assigneeName}`);
@@ -2070,7 +2015,6 @@ export class App {
     });
 
 
-    // Дедлайны
     this.bot.action("action:deadlines", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -2086,13 +2030,7 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
-      const tasks = await taskService.getUpcomingTasks(numericChatId, addDays(new Date(), 7));
+      const tasks = await taskService.getUpcomingTasks(chatId, addDays(new Date(), 7));
       if (tasks.length === 0) {
         await ctx.answerOnCallback({
           message: { text: "На ближайшую неделю дедлайнов не найдено.", attachments: [keyboardService.getBackMenu()] },
@@ -2100,8 +2038,9 @@ export class App {
         return;
       }
 
+      type TaskWithReminders = Awaited<ReturnType<typeof taskService.getUpcomingTasks>>[number];
       const summary = formatBulletList(
-        tasks.map((task) => {
+        tasks.map((task: TaskWithReminders) => {
           const parts = [task.title];
           if (task.dueDate) parts.push(`дедлайн ${formatDate(task.dueDate)}`);
           if (task.assigneeName) parts.push(`ответственный: ${task.assigneeName}`);
@@ -2114,7 +2053,6 @@ export class App {
       });
     });
 
-    // Материалы
     this.bot.action("action:materials", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -2130,13 +2068,7 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
-      const materials = await searchService.getAllMaterials(numericChatId, 30);
+      const materials = await searchService.getAllMaterials(chatId.toString(), 30);
       if (materials.length === 0) {
         await ctx.answerOnCallback({
           message: { text: "В чате пока нет материалов.", attachments: [keyboardService.getBackMenu()] },
@@ -2144,7 +2076,6 @@ export class App {
         return;
       }
 
-      // Используем функцию форматирования материалов для единообразия
       const formattedMaterials = formatMaterials(materials);
 
       const text = [
@@ -2158,7 +2089,6 @@ export class App {
       });
     });
 
-    // Дайджест
     this.bot.action("action:digest", async (ctx) => {
       const text = "📊 Дайджест обсуждений:";
       await ctx.answerOnCallback({
@@ -2203,22 +2133,25 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
       const today = new Date();
       const fromDate = startOfDay(today);
       const toDate = endOfDay(today);
       
-      // Get chat title
       const userChats = await userChatService.getUserChats(userId);
-      const selectedChat = userChats.find((c: { chatId: string }) => c.chatId === chatId);
-      const chatTitle = selectedChat?.chatTitle ?? `Чат ${chatId}`;
+      if (!userChats) return;
+      const chatIdBigInt = toBigInt(chatId);
+      if (!chatIdBigInt) {
+        await ctx.answerOnCallback({ notification: "Ошибка: не удалось определить ID чата." });
+        return;
+      }
+      const selectedChat = userChats.find((c) => {
+        const cId = toBigInt(c.chatId);
+        return cId === chatIdBigInt;
+      });
+      const chatIdDisplay = Number(chatIdBigInt);
+      const chatTitle = selectedChat?.chatTitle ?? `Чат ${chatIdDisplay}`;
       
-      const digest = await digestService.generateDigest(numericChatId, chatTitle, { from: fromDate, to: toDate }, {}, this.bot.api);
+      const digest = await digestService.generateDigest(chatIdBigInt, chatTitle, { from: fromDate, to: toDate }, {}, this.bot.api);
       if (!digest) {
         await ctx.answerOnCallback({ notification: "Дайджест за сегодня пуст" });
         return;
@@ -2244,22 +2177,25 @@ export class App {
         return;
       }
 
-      const numericChatId = Number.parseInt(chatId, 10);
-      if (Number.isNaN(numericChatId)) {
-        await ctx.answerOnCallback({ notification: "Ошибка: неверный ID чата" });
-        return;
-      }
-
       const now = new Date();
       const fromDate = startOfWeek(now);
       const toDate = endOfWeek(now);
       
-      // Get chat title
       const userChats = await userChatService.getUserChats(userId);
-      const selectedChat = userChats.find((c: { chatId: string }) => c.chatId === chatId);
-      const chatTitle = selectedChat?.chatTitle ?? `Чат ${chatId}`;
+      if (!userChats) return;
+      const chatIdBigInt = toBigInt(chatId);
+      if (!chatIdBigInt) {
+        await ctx.answerOnCallback({ notification: "Ошибка: не удалось определить ID чата." });
+        return;
+      }
+      const selectedChat = userChats.find((c) => {
+        const cId = toBigInt(c.chatId);
+        return cId === chatIdBigInt;
+      });
+      const chatIdDisplay = Number(chatIdBigInt);
+      const chatTitle = selectedChat?.chatTitle ?? `Чат ${chatIdDisplay}`;
       
-      const digest = await digestService.generateDigest(numericChatId, chatTitle, { from: fromDate, to: toDate }, {}, this.bot.api);
+      const digest = await digestService.generateDigest(chatIdBigInt, chatTitle, { from: fromDate, to: toDate }, {}, this.bot.api);
       if (!digest) {
         await ctx.answerOnCallback({ notification: "Дайджест за неделю пуст" });
         return;
@@ -2270,7 +2206,6 @@ export class App {
       });
     });
 
-    // Календарь
     this.bot.action("action:calendar", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -2279,7 +2214,6 @@ export class App {
       }
 
       try {
-        // Получаем задачи пользователя из всех чатов
         const userTasks = await taskService.getPersonalTasks(userId, addDays(new Date(), 60));
         
         if (userTasks.length === 0) {
@@ -2292,12 +2226,12 @@ export class App {
           return;
         }
 
-        // Группируем задачи по датам
         const tasksByDate = new Map<string, typeof userTasks>();
-        userTasks.forEach((task) => {
+        type TaskWithReminders = Awaited<ReturnType<typeof taskService.getPersonalTasks>>[number];
+        userTasks.forEach((task: TaskWithReminders) => {
           if (task.dueDate) {
             const dateStr = formatDate(task.dueDate, "Europe/Moscow");
-            const dateKey = dateStr.split(" ")[0] ?? dateStr; // Только дата
+            const dateKey = dateStr.split(" ")[0] ?? dateStr; 
             if (!tasksByDate.has(dateKey)) {
               tasksByDate.set(dateKey, []);
             }
@@ -2305,17 +2239,16 @@ export class App {
           }
         });
 
-        // Формируем календарь
         const calendarText: string[] = [];
         calendarText.push("📅 **Ваш календарь дедлайнов:**\n");
         
-        // Сортируем даты
         const sortedDates = Array.from(tasksByDate.keys()).sort();
         
         sortedDates.forEach((dateKey) => {
           const tasks = tasksByDate.get(dateKey)!;
           calendarText.push(`\n**${dateKey}:**`);
-          tasks.forEach((task) => {
+          type TaskWithReminders = Awaited<ReturnType<typeof taskService.getPersonalTasks>>[number];
+          tasks.forEach((task: TaskWithReminders) => {
             const parts = [task.title];
             if (task.dueDate) {
               const dateStr = formatDate(task.dueDate, "Europe/Moscow");
@@ -2354,7 +2287,6 @@ export class App {
       }
     });
 
-    // Экспорт календаря в Excel
     this.bot.action("action:calendar_export_excel", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -2377,17 +2309,14 @@ export class App {
           return;
         }
 
-        // Создаем временный файл с правильным именем
         const tempFilePath = join(tmpdir(), excelResult.filename);
         writeFileSync(tempFilePath, excelResult.buffer);
 
         try {
-          // Загружаем файл в MAX API
           const uploadedFile = await ctx.api.uploadFile({
             source: tempFilePath,
           });
 
-          // Создаем FileAttachment
           const fileAttachment = new FileAttachment({ token: uploadedFile.token });
 
           const text = [
@@ -2405,7 +2334,6 @@ export class App {
             "• Статус",
           ].join("\n");
 
-          // Отправляем файл пользователю
           const senderUserId = toInt(ctx.user?.user_id);
           if (senderUserId) {
             await ctx.api.sendMessageToUser(senderUserId, text, {
@@ -2437,7 +2365,6 @@ export class App {
             },
           });
         } finally {
-          // Удаляем временный файл
           try {
             unlinkSync(tempFilePath);
           } catch (cleanupError) {
@@ -2463,7 +2390,6 @@ export class App {
       }
     });
 
-    // Поиск
     this.bot.action("action:search", async (ctx) => {
       const userId = toInt(ctx.user?.user_id);
       if (!userId) {
@@ -2510,7 +2436,6 @@ export class App {
       });
     });
 
-    // Настройки
     this.bot.action("action:settings", async (ctx) => {
       const text = "⚙️ Настройки:";
       await ctx.answerOnCallback({
@@ -2525,7 +2450,7 @@ export class App {
         return;
       }
 
-      const preference = await preferenceService.getOrCreate(ensureIdString(userId));
+      const preference = await preferenceService.getOrCreate(toInt(userId) ?? 0);
       
       await ctx.answerOnCallback({
         message: {
@@ -2553,7 +2478,7 @@ export class App {
         return;
       }
 
-      const preference = await preferenceService.getOrCreate(ensureIdString(userId));
+      const preference = await preferenceService.getOrCreate(toInt(userId) ?? 0);
       
       await ctx.answerOnCallback({
         message: {

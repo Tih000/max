@@ -3,13 +3,12 @@ import schedule, { Job } from "node-schedule";
 import { prisma } from "../db";
 import { logger } from "../logger";
 import { digestService } from "./digestService";
-import { ensureIdString } from "../utils/ids";
-import { toInt } from "../utils/number";
+import { toInt, toBigInt } from "../utils/number";
 import { endOfDay, startOfDay } from "../utils/date";
 
 type DigestJob = {
-  chatId: string;
-  userId: string;
+  chatId: bigint;
+  userId: number;
   job: Job;
 };
 
@@ -34,8 +33,9 @@ export class ScheduledDigestService {
     cronExpression: string,
     botApi?: { sendMessageToUser: (userId: number, text: string) => Promise<unknown> },
   ) {
-    const normalizedChatId = ensureIdString(chatId);
-    const normalizedUserId = ensureIdString(userId);
+    const normalizedChatId = toBigInt(chatId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedChatId || !normalizedUserId) return;
     const key = `${normalizedChatId}:${normalizedUserId}`;
 
     // Cancel existing job if any
@@ -70,8 +70,9 @@ export class ScheduledDigestService {
   }
 
   async cancelDigest(chatId: number | string, userId: number | string) {
-    const normalizedChatId = ensureIdString(chatId);
-    const normalizedUserId = ensureIdString(userId);
+    const normalizedChatId = toBigInt(chatId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedChatId || !normalizedUserId) return;
     const key = `${normalizedChatId}:${normalizedUserId}`;
 
     const existing = this.jobs.get(key);

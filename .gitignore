@@ -1,5 +1,47 @@
+# Dependencies
 node_modules
-# Keep environment variables out of version control
-.env
+# package-lock.json должен быть в репозитории для воспроизводимости
 
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+*.js.map
+*.d.ts.map
+
+# Prisma
 /generated/prisma
+prisma/migrations/.migrate
+
+# Certificates (keep directory structure)
+certs/*.crt
+certs/*.pem
+certs/*.cert
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files
+*.tmp
+*.temp
+
+# Test coverage
+coverage/
+*.lcov

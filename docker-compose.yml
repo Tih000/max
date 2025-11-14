@@ -24,13 +24,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/maxbot?schema=public
-      DEBUG: one-me:*
-      LOG_LEVEL: debug
     restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+    command: ["/app/start.sh"]
+    volumes:
+      - ./certs:/app/certs:ro
 
 volumes:
   postgres_data:

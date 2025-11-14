@@ -8,8 +8,7 @@ import { formatBulletList, sanitizeText } from "../utils/text";
 import { gigaChatService } from "./gigachatService";
 import { preferenceService } from "./preferenceService";
 import { taskService } from "./taskService";
-import { ensureIdString } from "../utils/ids";
-import { toInt } from "../utils/number";
+import { toInt, toBigInt } from "../utils/number";
 
 type TaskWithReminders = Awaited<ReturnType<typeof taskService.getPersonalTasks>>[number];
 
@@ -26,14 +25,17 @@ export class AssistantService {
     question: string,
     botApi?: Api,
   ): Promise<AssistantAnswer> {
-    const userIdString = ensureIdString(userId);
-    const timezone = (await preferenceService.getOrCreate(userIdString)).timezone;
-    const normalizedChatId = chatId ? ensureIdString(chatId) : null;
+    const userIdNumber = toInt(userId);
+    if (!userIdNumber) {
+      throw new Error("Не удалось определить ID пользователя");
+    }
+    const timezone = (await preferenceService.getOrCreate(userIdNumber)).timezone;
+    const normalizedChatId = chatId ? toBigInt(chatId) : null;
     const api = botApi ?? this.botApi;
 
     // Получаем расширенный контекст с историей чата
     const [upcomingTasks, allTasks, materials, recentMessages, chatMembers] = await Promise.all([
-      taskService.getPersonalTasks(userIdString, addDays(new Date(), 7)),
+      taskService.getPersonalTasks(userIdNumber, addDays(new Date(), 7)),
       normalizedChatId ? taskService.getAllTasks(normalizedChatId, 30) : Promise.resolve([]),
       normalizedChatId
         ? prisma.material.findMany({
@@ -90,7 +92,7 @@ export class AssistantService {
       const memberActivity = new Map<string, { name: string; username?: string; messageCount: number; lastActivity?: Date }>();
       
       recentMessages.forEach((msg) => {
-        const senderId = msg.senderId ?? "unknown";
+        const senderId = msg.senderId ? String(msg.senderId) : "unknown";
         const existing = memberActivity.get(senderId);
         memberActivity.set(senderId, {
           name: msg.senderName ?? existing?.name ?? "Участник",
@@ -105,10 +107,10 @@ export class AssistantService {
 
       // Объединяем с информацией из API
       const membersInfo = chatMembers.map((member: { user_id?: number; name?: string; username?: string | null }) => {
-        const userId = ensureIdString(member.user_id);
+        const userId = member.user_id ? String(member.user_id) : "unknown";
         const activity = memberActivity.get(userId);
         return {
-          id: userId,
+          id: member.user_id ?? 0,
           name: member.name ?? activity?.name ?? "Участник",
           username: member.username ?? activity?.username ?? undefined,
           messageCount: activity?.messageCount ?? 0,
@@ -219,11 +221,11 @@ export class AssistantService {
     if (gigaChatService.enabled) {
       try {
         const answer = await gigaChatService.answerQuestion(question, context, {
-          chatId: normalizedChatId,
-          userId: userIdString,
+          chatId: normalizedChatId ? String(normalizedChatId) : null,
+          userId: String(userIdNumber),
           timezone,
           chatMembers: chatMembers.map((m: { user_id?: number; name?: string; username?: string | null }) => ({
-            id: ensureIdString(m.user_id),
+            id: String(m.user_id ?? 0),
             name: m.name ?? "Участник",
             username: m.username ?? undefined,
           })),
@@ -243,12 +245,12 @@ export class AssistantService {
     };
   }
 
-  async getWeeklyDigest(chatId: number | string) {
+  async getWeeklyDigest(chatId: number | string | bigint) {
     const from = startOfWeek();
     const to = endOfWeek();
     const messages: PrismaMessage[] = await prisma.message.findMany({
       where: {
-        chatId: ensureIdString(chatId),
+        chatId: toBigInt(chatId) ?? undefined,
         timestamp: { gte: from, lte: to },
       },
       orderBy: { timestamp: "asc" },

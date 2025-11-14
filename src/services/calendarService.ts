@@ -4,7 +4,7 @@ import ExcelJS from "exceljs";
 import { prisma } from "../db";
 import { logger } from "../logger";
 import { addDays, formatDate } from "../utils/date";
-import { ensureIdString } from "../utils/ids";
+import { toInt } from "../utils/number";
 
 type CalendarResult = {
   ics: string;
@@ -20,7 +20,10 @@ type ExcelResult = {
 
 export class CalendarService {
   async exportUserCalendar(userId: number | string): Promise<CalendarResult | null> {
-    const normalizedUserId = ensureIdString(userId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) {
+      throw new Error("Не удалось определить ID пользователя");
+    }
     const tasks: Task[] = await prisma.task.findMany({
       where: {
         OR: [{ assigneeId: normalizedUserId }, { createdByUserId: normalizedUserId }],
@@ -66,7 +69,10 @@ export class CalendarService {
   }
 
   async exportUserCalendarToExcel(userId: number | string): Promise<ExcelResult | null> {
-    const normalizedUserId = ensureIdString(userId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) {
+      throw new Error("Не удалось определить ID пользователя");
+    }
     const tasks: Task[] = await prisma.task.findMany({
       where: {
         OR: [{ assigneeId: normalizedUserId }, { createdByUserId: normalizedUserId }],

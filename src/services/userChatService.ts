@@ -1,11 +1,11 @@
 import { prisma } from "../db";
 import { logger } from "../logger";
-import { ensureIdString } from "../utils/ids";
+import { toInt, toBigInt } from "../utils/number";
 
 export class UserChatService {
   async getUserChats(userId: number | string) {
-    const normalizedUserId = ensureIdString(userId);
-    // @ts-ignore - UserChat model available after prisma:generate
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return [];
     return prisma.userChat.findMany({
       where: {
         userId: normalizedUserId,
@@ -18,10 +18,11 @@ export class UserChatService {
   }
 
   async addChat(userId: number | string, chatId: number | string, chatTitle?: string) {
-    const normalizedUserId = ensureIdString(userId);
-    const normalizedChatId = ensureIdString(chatId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return;
+    const normalizedChatId = toBigInt(chatId);
+    if (!normalizedChatId) return;
 
-    // @ts-ignore - UserChat model available after prisma:generate
     const existing = await prisma.userChat.findUnique({
       where: {
         userId_chatId: {
@@ -33,7 +34,6 @@ export class UserChatService {
 
     if (existing) {
       // Reactivate if it was deactivated
-      // @ts-ignore - UserChat model available after prisma:generate
       return prisma.userChat.update({
         where: { id: existing.id },
         data: {
@@ -44,7 +44,6 @@ export class UserChatService {
       });
     }
 
-    // @ts-ignore - UserChat model available after prisma:generate
     return prisma.userChat.create({
       data: {
         userId: normalizedUserId,
@@ -56,10 +55,11 @@ export class UserChatService {
   }
 
   async removeChat(userId: number | string, chatId: number | string) {
-    const normalizedUserId = ensureIdString(userId);
-    const normalizedChatId = ensureIdString(chatId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return;
+    const normalizedChatId = toBigInt(chatId);
+    if (!normalizedChatId) return;
 
-    // @ts-ignore - UserChat model available after prisma:generate
     const existing = await prisma.userChat.findUnique({
       where: {
         userId_chatId: {
@@ -73,7 +73,6 @@ export class UserChatService {
       return null;
     }
 
-    // @ts-ignore - UserChat model available after prisma:generate
     return prisma.userChat.update({
       where: { id: existing.id },
       data: {
@@ -83,11 +82,12 @@ export class UserChatService {
   }
 
   async selectChat(userId: number | string, chatId: number | string) {
-    const normalizedUserId = ensureIdString(userId);
-    const normalizedChatId = ensureIdString(chatId);
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return;
+    const normalizedChatId = toBigInt(chatId);
+    if (!normalizedChatId) return;
 
     // Verify chat exists in user's list
-    // @ts-ignore - UserChat model available after prisma:generate
     const userChat = await prisma.userChat.findUnique({
       where: {
         userId_chatId: {
@@ -102,15 +102,11 @@ export class UserChatService {
     }
 
     // Update preference
-    // @ts-ignore - selectedChatId available after prisma:generate
     await prisma.userPreference.upsert({
       where: { userId: normalizedUserId },
-      // @ts-ignore - selectedChatId available after prisma:generate
-      update: { selectedChatId: normalizedChatId },
-      // @ts-ignore - selectedChatId available after prisma:generate
-      create: {
+        update: { selectedChatId: normalizedChatId },
+        create: {
         userId: normalizedUserId,
-        // @ts-ignore - selectedChatId available after prisma:generate
         selectedChatId: normalizedChatId,
       },
     });
@@ -118,27 +114,23 @@ export class UserChatService {
     return userChat;
   }
 
-  async getSelectedChat(userId: number | string): Promise<string | null> {
-    const normalizedUserId = ensureIdString(userId);
-    // @ts-ignore - selectedChatId available after prisma:generate
+  async getSelectedChat(userId: number | string): Promise<bigint | null> {
+    const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return null;
     const preference = await prisma.userPreference.findUnique({
       where: { userId: normalizedUserId },
-      // @ts-ignore - selectedChatId available after prisma:generate
       select: { selectedChatId: true },
     });
 
-    // @ts-ignore - selectedChatId available after prisma:generate
     if (!preference?.selectedChatId) {
       return null;
     }
 
     // Verify chat is still active
-    // @ts-ignore - UserChat model available after prisma:generate
     const userChat = await prisma.userChat.findUnique({
       where: {
         userId_chatId: {
           userId: normalizedUserId,
-          // @ts-ignore - selectedChatId available after prisma:generate
           chatId: preference.selectedChatId,
         },
       },
@@ -146,16 +138,13 @@ export class UserChatService {
 
     if (!userChat || !userChat.isActive) {
       // Clear invalid selection
-      // @ts-ignore - selectedChatId available after prisma:generate
       await prisma.userPreference.update({
         where: { userId: normalizedUserId },
-        // @ts-ignore - selectedChatId available after prisma:generate
         data: { selectedChatId: null },
       });
       return null;
     }
 
-    // @ts-ignore - selectedChatId available after prisma:generate
     return preference.selectedChatId;
   }
 
@@ -170,7 +159,8 @@ export class UserChatService {
       const response = await botApi.getAllChats();
       const allChats = response.chats ?? [];
 
-      const normalizedUserId = ensureIdString(userId);
+      const normalizedUserId = toInt(userId);
+    if (!normalizedUserId) return;
 
       // Проверяем членство пользователя в каждом чате
       const userChats: Array<{ chat_id: number; title?: string }> = [];
@@ -193,24 +183,23 @@ export class UserChatService {
       }
 
       // Get existing chats
-      // @ts-ignore - UserChat model available after prisma:generate
-      const existingChats = await prisma.userChat.findMany({
-        where: {
-          userId: normalizedUserId,
-          isActive: true,
-        },
-      });
+    const existingChats = await prisma.userChat.findMany({
+      where: {
+        userId: normalizedUserId,
+        isActive: true,
+      },
+    });
 
-      const existingChatIds = new Set(existingChats.map((c: { chatId: string }) => c.chatId));
+    const existingChatIds = new Set(existingChats.map((c) => c.chatId));
 
       // Add new chats (только те, в которых состоит пользователь)
       for (const chat of userChats) {
-        const chatId = ensureIdString(chat.chat_id);
+        const chatId = toBigInt(chat.chat_id);
+        if (!chatId) continue;
         if (!existingChatIds.has(chatId)) {
-          await this.addChat(normalizedUserId, chatId, chat.title);
+          await this.addChat(normalizedUserId, Number(chatId), chat.title);
         } else {
           // Update title if changed
-          // @ts-ignore - UserChat model available after prisma:generate
           await prisma.userChat.updateMany({
             where: {
               userId: normalizedUserId,
