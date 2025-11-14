@@ -69,7 +69,7 @@ AI-ассистент на базе GigaChat, который:
          retries: 5
 
      bot:
-       image: ghcr.io/<ваш-username>/<название-репозитория>:latest
+       image: ghcr.io/tih000/max:latest
        depends_on:
          postgres:
            condition: service_healthy
@@ -196,7 +196,7 @@ Docker-образ автоматически собирается и публи�
 
 **Использование опубликованного образа:**
 ```bash
-docker pull ghcr.io/<ваш-username>/<название-репозитория>:latest
+docker pull ghcr.io/tih000/max:latest
 ```
 
 **GitHub Actions workflow:**
